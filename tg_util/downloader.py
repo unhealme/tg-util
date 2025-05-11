@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-4"
+__version__ = "b2025.05.11-5"
 
 import asyncio
 import contextlib
@@ -687,11 +687,12 @@ def parse_args(_args: "Sequence[str] | None" = None):
         config = Config.decode_yaml(args.config.read_bytes())
         for sf in config.__struct_fields__:
             sv = getattr(config, sf)
-            if sv is not UNSET:  # TODO: should only replace unset
+            if sv is not UNSET:
                 match sf:
                     case "download_path":
                         sv = Path(sv)
                 setattr(args, sf, sv)
+    args = parser.parse_args(_args, args)
     if args.mode is Mode.Unset:
         if args.file:
             args.mode = Mode.File
