@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-2"
+__version__ = "b2025.05.11-3"
 
 import asyncio
 import contextlib
@@ -293,6 +293,7 @@ class TGDownloader(ABC):
         fattr = get_file_attr(file)
         target_path, meta_path = self._wrapper.resolve_path(
             chat_id,
+            username,
             message.id,
             file.name,
             file.ext,

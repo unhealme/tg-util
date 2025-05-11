@@ -59,6 +59,7 @@ class InputMessageWrapper(Struct):
     def resolve_path(
         self,
         chat_id: int,
+        chat_username: str,
         message_id: int,
         file_name: Any,
         file_ext: Any,
@@ -74,8 +75,14 @@ class InputMessageWrapper(Struct):
         )
         if file_attr.type is FileType.Other:
             base_name = file_name or base_name
-        meta_path = (self.dl_path / "Meta" / base_name).with_suffix(".json")
-        target_path = self.dl_path / file_attr.type.path / base_name
+        if chat_username:
+            dl_path = self.dl_path / f"@{chat_username}"
+        else:
+            dl_path = self.dl_path / str(chat_id)
+        if self.thumbs_only:
+            dl_path = dl_path.with_name(dl_path.name + " - thumbs")
+        meta_path = (dl_path / "Meta" / base_name).with_suffix(".json")
+        target_path = dl_path / file_attr.type.path / base_name
         if self.thumbs_only and file_attr.type is FileType.Video:
             target_path = target_path.with_suffix(".webp")
         return target_path, meta_path
