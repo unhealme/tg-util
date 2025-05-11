@@ -255,6 +255,7 @@ class TGDownloader(ABC):
                     reverse=self._args.reverse_download,
                 )
             async for message, reply_id in pool:
+                prog.update(1)
                 try:
                     wrapped = await self.validate(message, entity, reply_id)
                     await self.add_task(self.download_message(wrapped))
