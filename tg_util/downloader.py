@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-3"
+__version__ = "b2025.05.11-4"
 
 import asyncio
 import contextlib
@@ -81,6 +81,7 @@ class Arguments(ARGSBase):
     debug: bool
     overwrite: bool
     reverse_download: bool
+    single_url: bool
     thumbs_only: bool
     use_takeout: bool
 
@@ -99,9 +100,10 @@ class Config(Decodable):
     download_path: str | UnsetType = UNSET
     download_threads: int | UnsetType = UNSET
     overwrite: bool | UnsetType = UNSET
-    proxy: str | None | UnsetType = UNSET
+    proxy: str | UnsetType = UNSET
     reverse_download: bool | UnsetType = UNSET
     session: str | UnsetType = UNSET
+    single_url: bool | UnsetType = UNSET
     thumbs_only: bool | UnsetType = UNSET
     use_takeout: bool | UnsetType = UNSET
 
@@ -181,11 +183,11 @@ class TGDownloader(ABC):
                     with tqdm() as subprog:
                         for entity, message_id in self._args.urls:
                             prog.update(1)
-                            await self.process_ids(
-                                entity,
-                                [(message_id - 1, 0)],
-                                subprog,
-                            )
+                            if self._args.single_url:
+                                ids = (message_id, None)
+                            else:
+                                ids = (message_id - 1, 0)
+                            await self.process_ids(entity, [ids], subprog)
         async for _ in self.wait_tasks():
             pass
 
@@ -598,6 +600,12 @@ def parse_args(_args: "Sequence[str] | None" = None):
         action="store_true",
         help="download URL(s) in ascending order",
         dest="reverse_download",
+    )
+    downloads.add_argument(
+        "--single-url",
+        action="store_true",
+        help="only fetch single message per URL(s)",
+        dest="single_url",
     )
     downloads.add_argument(
         "--thumbs-only",
