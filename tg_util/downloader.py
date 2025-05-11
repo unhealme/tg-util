@@ -335,14 +335,14 @@ class TGDownloader(ABC):
                 elif file_hash == wrapped.file_hash:
                     logger.debug(
                         "%s: duplicate file hash with message %s, skipping download",
-                        self,
+                        wrapped,
                         msg,
                     )
                     raise MessageValidationError(message, entity, meta_path)
                 else:
                     logger.debug(
                         "%s: duplicate attribute with message %s, skipping download",
-                        self,
+                        wrapped,
                         msg,
                     )
                     raise MessageValidationError(message, entity, meta_path)
