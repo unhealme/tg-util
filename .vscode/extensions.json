@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "detachhead.basedpyright",
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "redhat.vscode-yaml"
+    ]
+}

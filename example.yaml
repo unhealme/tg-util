@@ -1,0 +1,15 @@
+# downloads
+download_path: /path/to/download
+download_threads: 1
+overwrite: false
+reverse_download: false
+thumbs_only: false
+
+# options
+archive: "mysql://user:pass@127.0.0.1:33060/archive"
+session: "mysql://user:pass@127.0.0.1:33060/session?api_id=12345678&api_hash=1234567890abcdef1234567890abcdef"
+proxy: http://127.0.0.1:8080
+use_takeout: false
+
+# post download
+create_sheet: false
