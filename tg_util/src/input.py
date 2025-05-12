@@ -15,7 +15,7 @@ class InputFile(ABC):
         self._fpath = Path(fp)
         self.content = {}
         with open(self._fpath, "r", encoding="utf-8") as f:
-            self.content = {n: (Lock(), line) for n, line in enumerate(f, 1)}
+            self.content = {n: (Lock(), line.strip()) for n, line in enumerate(f, 1)}
         self._write_lock = Lock()
 
     def __repr__(self):

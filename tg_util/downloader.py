@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-5"
+__version__ = "b2025.05.11-6"
 
 import asyncio
 import contextlib
@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import ParseResult, parse_qs, urlparse
 
-from msgspec import UNSET, UnsetType
+from msgspec import UNSET, Struct, UnsetType
 from PIL import Image, ImageDraw
 from telethon import TelegramClient
 from tqdm.contrib import DummyTqdmFile
@@ -53,6 +53,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+TQDM_ERR = DummyTqdmFile(sys.stderr)
+TQDM_OUT = DummyTqdmFile(sys.stdout)
 
 
 class Mode(Enum):
@@ -108,8 +111,10 @@ class Config(Decodable):
     use_takeout: bool | UnsetType = UNSET
 
 
-TQDM_ERR = DummyTqdmFile(sys.stderr)
-TQDM_OUT = DummyTqdmFile(sys.stdout)
+class DownloadResult(Struct, array_like=True):
+    success: bool
+    message: MessageWrapped
+    context: dict[str, "Any"]
 
 
 class TGDownloader(ABC):
@@ -120,7 +125,7 @@ class TGDownloader(ABC):
     _mode: Mode
     _no_takeout: TelegramClient
     _sheet: SheetGenerator
-    _tasks: set[asyncio.Task[bool]]
+    _tasks: set[asyncio.Task[DownloadResult]]
     _wrapper: InputMessageWrapper
 
     @property
@@ -177,7 +182,12 @@ class TGDownloader(ABC):
                         prog,
                     )
             case Mode.File:
-                await self.process_file()
+                async with self._input.ensure_write() as f:
+                    async for t in self.process_file():
+                        await f.set_status(
+                            t.context["lnum"],
+                            "# %s" if t.success else "%s # error",
+                        )
             case Mode.URL:
                 with tqdm(total=len(self._args.urls), desc="Progress") as prog:
                     with tqdm() as subprog:
@@ -188,11 +198,10 @@ class TGDownloader(ABC):
                             else:
                                 ids = (message_id - 1, 0)
                             await self.process_ids(entity, [ids], subprog)
-        async for _ in self.wait_tasks():
-            pass
+        await self.wait_tasks()
 
     async def process_file(self):
-        async for lnum, line in tqdm(aiter(self._input), "Overall"):
+        async for lnum, line in tqdm(aiter(self._input), "Overall", len(self._input)):
             if not (line := line.partition("#")[0].strip()):
                 logger.debug("ignoring input at line %s", lnum)
                 continue
@@ -200,7 +209,7 @@ class TGDownloader(ABC):
             try:
                 entity = await resolve_entity(self._client, _entity)
             except Exception:
-                await self.write_input(lnum, "##%s (entity error)")
+                await self._input.set_status(lnum, "##%s (entity error)")
                 continue
 
             async for message, reply_id in iter_messages(
@@ -210,7 +219,14 @@ class TGDownloader(ABC):
             ):
                 try:
                     wrapped = await self.validate(message, entity, reply_id)
-                    await self.add_task(self.download_message_line(wrapped, lnum))
+                    if done := await self.add_task(
+                        self.download_message(
+                            wrapped,
+                            lnum=lnum,
+                        )
+                    ):
+                        for t in done:
+                            yield t
                 except FileAlreadyExists as e:
                     file_id, meta_path = e.args
                     try:
@@ -224,6 +240,9 @@ class TGDownloader(ABC):
                         await self._wrapper.write_meta(*e.args)
                 except MessageHasNoFile:
                     pass
+        for t in asyncio.as_completed(self._tasks):
+            yield await t
+        self._tasks.clear()
 
     async def process_ids(
         self,
@@ -365,7 +384,7 @@ class TGDownloader(ABC):
                 )
         return wrapped
 
-    async def add_task(self, task: "_CoroutineLike[Any]"):
+    async def add_task(self, task: "_CoroutineLike[DownloadResult]"):
         self._tasks.add(self._loop.create_task(task))
         if len(self._tasks) >= self._args.download_threads:
             done, pending = await asyncio.wait(
@@ -373,25 +392,14 @@ class TGDownloader(ABC):
             )
             self._tasks.difference_update(done)
             self._tasks.update(pending)
-
-    async def write_input(self, line: int, fmt: str):
-        async with self._input.ensure_write() as file:
-            await file.set_status(line, fmt)
+            return [t.result() for t in done]
+        return None
 
     async def wait_tasks(self):
         for t in asyncio.as_completed(self._tasks):
-            yield await t
+            await t
 
-    async def download_message_line(self, message: MessageWrapped, lnum: int):
-        async with self._input.ensure_write() as f:
-            success = await self.download_message(message)
-            if success:
-                await f.set_status(lnum, "# %s")
-            else:
-                await f.set_status(lnum, "%s # error")
-            return success
-
-    async def download_message(self, message: MessageWrapped):
+    async def download_message(self, message: MessageWrapped, **ctx: "Any"):
         download_success = False
         logger.debug("downloading %s as %s", message, message.target_path.name)
         part_file = message.target_path.with_suffix(
@@ -415,19 +423,19 @@ class TGDownloader(ABC):
                         file=str(part_file.absolute()),
                     )
             part_file.rename(message.target_path)
-            download_success = True
             await self._wrapper.write_meta(
                 message.message,
                 message.entity,
                 message.meta_path,
             )
+            download_success = True
             await self._archive.set_complete(fattr.id)
             logger.info("%s: file downloaded", message)
             await self.post_download(message)
-            return download_success
+            return DownloadResult(download_success, message, ctx)
         except Exception:
             logger.exception("%s: download file error", message)
-            return download_success
+            return DownloadResult(download_success, message, ctx)
         finally:
             if not download_success:
                 part_file.unlink(missing_ok=True)
