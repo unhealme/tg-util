@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-7"
+__version__ = "b2025.05.11-8"
 
 import asyncio
 import contextlib
@@ -152,20 +152,20 @@ class TGDownloader(ABC):
 
     async def __aenter__(self):
         self._archive = await self._archive.__aenter__()
+        if self._args.create_sheet:
+            self._sheet = self._sheet.__enter__()
         self._client = await self._client.__aenter__()
         if self._args.use_takeout:
             self._no_takeout = self._client
             self._client = await self._client.takeout().__aenter__()
-        if self._args.create_sheet:
-            self._sheet = self._sheet.__enter__()
         return self
 
     async def __aexit__(self, *_exc: "Any"):
-        await self._archive.__aexit__(*_exc)
         if self._args.use_takeout:
             await self._client.__aexit__(*_exc)
             self._client = self._no_takeout
         await self._client.__aexit__(*_exc)
+        await self._archive.__aexit__(*_exc)
         if self._args.create_sheet:
             logger.debug("closing sheet generator")
             self._sheet.__exit__(*_exc)

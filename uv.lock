@@ -220,7 +220,7 @@ cryptg = [
 
 [[package]]
 name = "tg-util"
-version = "0.1.7.post0"
+version = "0.1.8.post0"
 source = { editable = "." }
 dependencies = [
     { name = "msgspec" },
