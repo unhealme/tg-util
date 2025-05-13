@@ -92,7 +92,7 @@ class InputMessageWrapper(Struct):
             dc, loc = get_input_location(message.media)
             hash = await get_file_hash(self.client, dc, loc)
         except FileReferenceExpiredError:
-            message = await self.refetch(message.input_chat, message.id)
+            message = await self.refetch(message)
             if not (file := message.file):
                 raise MessageHasNoFile
             try:
@@ -103,6 +103,12 @@ class InputMessageWrapper(Struct):
                     "unable to get file hash for %s", message_repr, exc_info=True
                 )
                 hash = blake2b(file.media.id.to_bytes(8)).digest()
+        except TypeError:
+            logger.warning(
+                "unable to get file hash for %s", message_repr, exc_info=True
+            )
+            assert message.file
+            hash = blake2b(message.file.media.id.to_bytes(8)).digest()
         return message, hash
 
     def get_repr(
@@ -132,9 +138,10 @@ class InputMessageWrapper(Struct):
             ),
         )
 
-    async def refetch(self, input_peer: Any, message_id: int):
+    async def refetch(self, message: "Message"):
         return cast(
-            "Message", await self.client.get_messages(input_peer, ids=message_id)
+            "Message",
+            await self.client.get_messages(message.input_chat, ids=message.id),
         )
 
     async def write_meta(self, message: "Message", entity: "Entity", fp: "Path"):

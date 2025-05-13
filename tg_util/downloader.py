@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-6"
+__version__ = "b2025.05.11-7"
 
 import asyncio
 import contextlib
