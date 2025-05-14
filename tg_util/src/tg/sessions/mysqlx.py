@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", module="mysqlx.protobuf")
 CURRENT_VERSION = 7
 
 
-class MySQLSession(MemorySession):
+class MySQLXSession(MemorySession):
     __session: Session
     __schema: Schema
     __tbl_entities: Table

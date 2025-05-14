@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.11-8"
+__version__ = "b2025.05.14-0"
 
 import asyncio
 import contextlib
@@ -22,7 +22,7 @@ from .src.input import InputFile
 from .src.log import setup_logging
 from .src.sheet import SheetGenerator
 from .src.tg.messages.wrapper import InputMessageWrapper, MessageWrapped
-from .src.tg.sessions.mysql import MySQLSession
+from .src.tg.sessions.mysqlx import MySQLXSession
 from .src.tg.utils import (
     get_file_attr,
     iter_messages,
@@ -47,9 +47,6 @@ if TYPE_CHECKING:
 
     from telethon.hints import Entity
     from telethon.tl.custom import Message
-
-    from .src.arc.mysql import MySQLArchive
-    from .src.arc.sqlite import SQLiteArchive
 
 
 logger = logging.getLogger(__name__)
@@ -118,7 +115,7 @@ class DownloadResult(Struct, array_like=True):
 
 
 class TGDownloader(ABC):
-    _archive: "MySQLArchive | SQLiteArchive"
+    _archive: arc.ArchiveBase
     _args: Arguments
     _client: TelegramClient
     _input: InputFile
@@ -493,7 +490,7 @@ async def main(_args: "Sequence[str] | None" = None):
             if args.proxy:
                 proxy = parse_proxy(urlparse(args.proxy))
             qs = parse_qs(query)
-            session = MySQLSession(
+            session = MySQLXSession(
                 username, password, hostname, port, schema.strip("/")
             )
             client = TelegramClient(

@@ -81,7 +81,8 @@ class SQLiteArchive(ArchiveBase):
         async with self.get_cursor() as cursor:
             await wrap_async(
                 cursor.execute,
-                "select msg from _archive_ where file_id = ? and downloaded is not null",
+                "select msg from _archive_ where file_id = ? and "
+                "downloaded is not null",
                 (file_id,),
             )
             if row := await wrap_async(cursor.fetchone):

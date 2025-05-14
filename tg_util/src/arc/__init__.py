@@ -12,15 +12,16 @@ if TYPE_CHECKING:
 
 def open(url: "ParseResult"):
     match url.scheme.lower():
-        case "mysql":
-            from .mysql import MySQLArchive
+        case "mysqlx":
+            from .mysqlx import MySQLXArchive as arc
 
-            arc = MySQLArchive(url)
         case "sqlite" | "sqlite3":
-            from .sqlite import SQLiteArchive
+            from .sqlite import SQLiteArchive as arc
 
-            arc = SQLiteArchive(url)
+        case "postgresql":
+            from .psql import PSQLArchive as arc
+
         case Never:
             err = f"unknown database scheme: {Never}"
             raise ValueError(err)
-    return arc
+    return arc(url)

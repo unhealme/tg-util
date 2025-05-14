@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from urllib.parse import ParseResult
 
 
-class MySQLArchive(ArchiveBase):
+class MySQLXArchive(ArchiveBase):
     _session: Session
     _table: Table
 
