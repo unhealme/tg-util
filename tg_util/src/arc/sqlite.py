@@ -1,3 +1,4 @@
+from asyncio import Lock
 from contextlib import asynccontextmanager
 from datetime import datetime
 from sqlite3 import Connection, connect
@@ -17,6 +18,7 @@ class SQLiteArchive(ArchiveBase):
 
     def __init__(self, params: "ParseResult"):
         self._params = params
+        self._lock = Lock()
 
     async def __aenter__(self):
         db = self._params.path
@@ -67,18 +69,18 @@ class SQLiteArchive(ArchiveBase):
         size: int | None,
         duration: float | None,
     ) -> "tuple[Any, Any, Any] | None":
-        async with self.get_cursor() as cursor:
+        async with self._lock, self.get_cursor() as cursor:
             await wrap_async(
                 cursor.execute,
                 "select msg, hash, downloaded from _archive_ where "
-                "hash = ? or "
-                "(width = ? and height = ? and size = ? and duration = ?)",
+                "downloaded is not null and (hash = ? or "
+                "(width = ? and height = ? and size = ? and duration = ?))",
                 (hash, width, height, size, duration),
             )
             return await wrap_async(cursor.fetchone)
 
     async def check_id(self, file_id: int):
-        async with self.get_cursor() as cursor:
+        async with self._lock, self.get_cursor() as cursor:
             await wrap_async(
                 cursor.execute,
                 "select msg from _archive_ where file_id = ? and "
@@ -89,7 +91,7 @@ class SQLiteArchive(ArchiveBase):
                 return row[0]
 
     async def set_complete(self, file_id: int):
-        async with self.get_cursor() as cursor:
+        async with self._lock, self.get_cursor() as cursor:
             await wrap_async(
                 cursor.execute,
                 "update _archive_ set downloaded = ? where file_id = ?",
@@ -110,7 +112,7 @@ class SQLiteArchive(ArchiveBase):
         duration: float | None,
         type: str,
     ):
-        async with self.get_cursor() as cursor:
+        async with self._lock, self.get_cursor() as cursor:
             q = (
                 "replace into _archive_ (file_id, msg, msg_id, chat_id, "
                 "chat_username, hash, width, height, size, duration, type) "

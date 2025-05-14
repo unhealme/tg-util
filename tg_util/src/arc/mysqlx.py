@@ -1,3 +1,4 @@
+from asyncio import Lock
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -18,6 +19,7 @@ class MySQLXArchive(ArchiveBase):
 
     def __init__(self, params: "ParseResult"):
         self._params = params
+        self._lock = Lock()
 
     async def __aenter__(self):
         schema_name = self._params.path.strip("/")
@@ -53,9 +55,10 @@ class MySQLXArchive(ArchiveBase):
         select = (
             self._table.select("msg", "hash", "downloaded")
             .where(
+                "downloaded is not null and ("
                 "hash = :hash or (width = :width and "
                 "height = :height and size = :size and "
-                "duration = :duration)"
+                "duration = :duration))"
             )
             .bind("hash", hash)
             .bind("width", width)
@@ -63,31 +66,34 @@ class MySQLXArchive(ArchiveBase):
             .bind("size", size)
             .bind("duration", duration)
         )
-        result = cast("RowResult", await wrap_async(select.execute))
-        if row := cast("Row | None", await wrap_async(result.fetch_one)):
-            return row[0], row[1], row[2]
+        async with self._lock:
+            result = cast("RowResult", await wrap_async(select.execute))
+            if row := cast("Row | None", await wrap_async(result.fetch_one)):
+                return row[0], row[1], row[2]
 
     async def check_id(self, file_id: int):
-        result = cast(
-            "RowResult",
-            await wrap_async(
-                self._table.select("msg")
-                .where("file_id = :fid and downloaded is not null")
-                .bind("fid", file_id)
-                .execute,
-            ),
-        )
-        if row := cast("Row | None", await wrap_async(result.fetch_one)):
-            return row[0]
+        async with self._lock:
+            result = cast(
+                "RowResult",
+                await wrap_async(
+                    self._table.select("msg")
+                    .where("file_id = :fid and downloaded is not null")
+                    .bind("fid", file_id)
+                    .execute,
+                ),
+            )
+            if row := cast("Row | None", await wrap_async(result.fetch_one)):
+                return row[0]
 
     async def set_complete(self, file_id: int):
-        await wrap_async(
-            self._table.update()
-            .set("downloaded", datetime.now().isoformat(timespec="seconds"))
-            .where("file_id = :fid")
-            .bind("fid", file_id)
-            .execute,
-        )
+        async with self._lock:
+            await wrap_async(
+                self._table.update()
+                .set("downloaded", datetime.now().isoformat(timespec="seconds"))
+                .where("file_id = :fid")
+                .bind("fid", file_id)
+                .execute,
+            )
 
     async def update(
         self,
@@ -128,14 +134,15 @@ class MySQLXArchive(ArchiveBase):
             duration,
             type,
         )
-        try:
-            await wrap_async(insert.execute)
-        except OperationalError:
-            await wrap_async(
-                self._table.delete()
-                .where("file_id = :fid or hash = :hash")
-                .bind("fid", file_id)
-                .bind("hash", hash)
-                .execute,
-            )
-            await wrap_async(insert.execute)
+        async with self._lock:
+            try:
+                await wrap_async(insert.execute)
+            except OperationalError:
+                await wrap_async(
+                    self._table.delete()
+                    .where("file_id = :fid or hash = :hash")
+                    .bind("fid", file_id)
+                    .bind("hash", hash)
+                    .execute,
+                )
+                await wrap_async(insert.execute)

@@ -2,12 +2,14 @@ from tg_util.src import ABC, abstractmethod
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
+    from asyncio import Lock
     from typing import Any, Self
     from urllib.parse import ParseResult
 
 
 class ArchiveBase(ABC):
     _params: "ParseResult"
+    _lock: "Lock"
 
     @abstractmethod
     def __init__(self, params: "ParseResult"): ...

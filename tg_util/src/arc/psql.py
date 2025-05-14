@@ -1,3 +1,4 @@
+from asyncio import Lock
 from datetime import datetime
 
 from asyncpg import Pool, Record, create_pool
@@ -17,6 +18,7 @@ class PSQLArchive(ArchiveBase):
     def __init__(self, params: "ParseResult"):
         self._params = params
         self._pool = create_pool(self._params.geturl())
+        self._lock = Lock()
 
     async def __aenter__(self):
         self._pool = await self._pool.__aenter__()
@@ -55,31 +57,34 @@ class PSQLArchive(ArchiveBase):
         size: int | None,
         duration: float | None,
     ):
-        r = await self._pool.fetchrow(
-            "select msg, hash, downloaded from _archive_ where "
-            "hash = $1 or "
-            "(width = $2 and height = $3 and size = $4 and duration = $5)",
-            hash.hex(),
-            width,
-            height,
-            size,
-            duration,
-        )
+        async with self._lock:
+            r = await self._pool.fetchrow(
+                "select msg, hash, downloaded from _archive_ where "
+                "downloaded is not null and (hash = $1 or "
+                "(width = $2 and height = $3 and size = $4 and duration = $5))",
+                hash.hex(),
+                width,
+                height,
+                size,
+                duration,
+            )
         if r:
             return r[0], r[1], r[2]
 
     async def check_id(self, file_id: int):
-        return await self._pool.fetchval(
-            "select msg from _archive_ where file_id = $1 and downloaded is not null",
-            file_id,
-        )
+        async with self._lock:
+            return await self._pool.fetchval(
+                "select msg from _archive_ where file_id = $1 and downloaded is not null",
+                file_id,
+            )
 
     async def set_complete(self, file_id: int):
-        await self._pool.execute(
-            "update _archive_ set downloaded = $1 where file_id = $2",
-            datetime.now(),
-            file_id,
-        )
+        async with self._lock:
+            await self._pool.execute(
+                "update _archive_ set downloaded = $1 where file_id = $2",
+                datetime.now(),
+                file_id,
+            )
 
     async def update(
         self,
@@ -95,7 +100,7 @@ class PSQLArchive(ArchiveBase):
         duration: float | None,
         type: str,
     ):
-        async with self._pool.acquire() as con:
+        async with self._lock, self._pool.acquire() as con:
             async with con.transaction():
                 await con.execute(
                     "delete from _archive_ where file_id = $1 or hash = $2",

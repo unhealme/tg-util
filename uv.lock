@@ -257,7 +257,7 @@ cryptg = [
 
 [[package]]
 name = "tg-util"
-version = "0.1.10.post0"
+version = "0.1.11.post0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
