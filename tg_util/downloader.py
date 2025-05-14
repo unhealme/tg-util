@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.14-1"
+__version__ = "b2025.05.14-2"
 
 import asyncio
 import contextlib
@@ -259,7 +259,7 @@ class TGDownloader(ABC):
                 await self.add_task(self.validate(message, entity, reply_id))
             prog.refresh()
 
-    async def _handle_or_return(self, t: asyncio.Task[DownloadResult]):
+    async def _handle_or_return(self, t: asyncio.Future[DownloadResult]):
         try:
             return await t
         except FileAlreadyExists as e:
@@ -379,7 +379,7 @@ class TGDownloader(ABC):
 
     async def wait_tasks(self):
         for t in asyncio.as_completed(self._tasks):
-            await t
+            await self._handle_or_return(t)
 
     async def download_message(self, message: MessageWrapped, **ctx: "Any"):
         download_success = False
