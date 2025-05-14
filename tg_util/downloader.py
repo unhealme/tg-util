@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.14-0"
+__version__ = "b2025.05.14-1"
 
 import asyncio
 import contextlib
@@ -214,29 +214,11 @@ class TGDownloader(ABC):
                 entity,
                 ids=msg_id,
             ):
-                try:
-                    wrapped = await self.validate(message, entity, reply_id)
-                    if done := await self.add_task(
-                        self.download_message(
-                            wrapped,
-                            lnum=lnum,
-                        )
-                    ):
-                        for t in done:
-                            yield t
-                except FileAlreadyExists as e:
-                    file_id, meta_path = e.args
-                    try:
-                        await self._archive.set_complete(file_id)
-                    except Exception:
-                        pass
-                    if self._args.always_write_meta:
-                        await self._wrapper.write_meta(message, entity, meta_path)
-                except MessageValidationError as e:
-                    if self._args.always_write_meta:
-                        await self._wrapper.write_meta(*e.args)
-                except MessageHasNoFile:
-                    pass
+                if done := await self.add_task(
+                    self.validate(message, entity, reply_id, lnum=lnum)
+                ):
+                    for t in done:
+                        yield t
         for t in asyncio.as_completed(self._tasks):
             yield await t
         self._tasks.clear()
@@ -274,29 +256,32 @@ class TGDownloader(ABC):
                 )
             async for message, reply_id in pool:
                 prog.update(1)
-                try:
-                    wrapped = await self.validate(message, entity, reply_id)
-                    await self.add_task(self.download_message(wrapped))
-                except FileAlreadyExists as e:
-                    file_id, meta_path = e.args
-                    try:
-                        await self._archive.set_complete(file_id)
-                    except Exception:
-                        pass
-                    if self._args.always_write_meta:
-                        await self._wrapper.write_meta(message, entity, meta_path)
-                except MessageValidationError as e:
-                    if self._args.always_write_meta:
-                        await self._wrapper.write_meta(*e.args)
-                except MessageHasNoFile:
-                    pass
+                await self.add_task(self.validate(message, entity, reply_id))
             prog.refresh()
+
+    async def _handle_or_return(self, t: asyncio.Task[DownloadResult]):
+        try:
+            return await t
+        except FileAlreadyExists as e:
+            message, entity, file_id, meta_path = e.args
+            try:
+                await self._archive.set_complete(file_id)
+            except Exception:
+                pass
+            if self._args.always_write_meta:
+                await self._wrapper.write_meta(message, entity, meta_path)
+        except MessageValidationError as e:
+            if self._args.always_write_meta:
+                await self._wrapper.write_meta(*e.args)
+        except MessageHasNoFile:
+            pass
 
     async def validate(
         self,
         message: "Message",
         entity: "Entity",
         reply_id: int | None,
+        **ctx: "Any",
     ):
         entity_class, _, username, chat_id = parse_entity(entity)
         message_repr = self._wrapper.get_repr(
@@ -324,7 +309,7 @@ class TGDownloader(ABC):
             logger.debug(
                 "%s: target file already exists, skipping download", message_repr
             )
-            raise FileAlreadyExists(fattr.id, meta_path)
+            raise FileAlreadyExists(message, entity, fattr.id, meta_path)
         if (msg := await self._archive.check_id(fattr.id)) is not None:
             logger.debug(
                 "%s: duplicate file id with message %s, skipping download",
@@ -379,7 +364,7 @@ class TGDownloader(ABC):
                     fattr.duration,
                     fattr.type.arc,
                 )
-        return wrapped
+        return await self.download_message(wrapped, **ctx)
 
     async def add_task(self, task: "_CoroutineLike[DownloadResult]"):
         self._tasks.add(self._loop.create_task(task))
@@ -389,7 +374,7 @@ class TGDownloader(ABC):
             )
             self._tasks.difference_update(done)
             self._tasks.update(pending)
-            return [t.result() for t in done]
+            return [r for t in done if (r := await self._handle_or_return(t))]
         return None
 
     async def wait_tasks(self):
