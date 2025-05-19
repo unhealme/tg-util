@@ -12,6 +12,8 @@ from .base import ArchiveBase
 if TYPE_CHECKING:
     from urllib.parse import ParseResult
 
+    from tg_util.src.tg.messages.export import MessageExport
+
 
 class MySQLXArchive(ArchiveBase):
     _session: Session
@@ -146,3 +148,6 @@ class MySQLXArchive(ArchiveBase):
                     .execute,
                 )
                 await wrap_async(insert.execute)
+
+    async def export(self, message: "MessageExport"):
+        raise NotImplementedError

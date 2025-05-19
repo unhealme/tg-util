@@ -2,7 +2,6 @@ import logging
 from datetime import datetime
 
 from msgspec import Struct, structs
-from telethon.tl.custom import Message
 from telethon.tl.types import (
     Document,
     DocumentAttributeFilename,
@@ -18,11 +17,15 @@ from telethon.utils import get_peer_id
 from tg_util.src.tg.utils import parse_entity, parse_hashtags
 from tg_util.src.utils import format_duration, round_size
 
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from telethon.tl.custom import Message
+
 logger = logging.getLogger(__name__)
 
 
-class ExtendedMessage(Struct, array_like=True):
-    date: str
+class MessageExport(Struct, array_like=True):
+    date: datetime
     chat_id: int
     chat_name: str | None
     chat_username: str | None
@@ -49,10 +52,10 @@ class ExtendedMessage(Struct, array_like=True):
     sender_name: str | None
     sender_username: str | None
     hashtags: str | None
-    fetch_date: str
+    fetch_date: datetime
 
     @classmethod
-    def from_message(cls, msg: Message):
+    def from_message(cls, msg: "Message"):
         assert msg.date
         try:
             _, sender_name, sender_username, sender_id = parse_entity(msg.sender)
@@ -131,7 +134,7 @@ class ExtendedMessage(Struct, array_like=True):
             reactions = sum(x.count for x in msg.reactions.results)
 
         return cls(
-            msg.date.replace(tzinfo=None).isoformat(),
+            msg.date.replace(tzinfo=None),
             get_peer_id(msg.chat, add_mark=False),
             chat_name,
             chat_username,
@@ -158,7 +161,7 @@ class ExtendedMessage(Struct, array_like=True):
             sender_name,
             sender_username,
             ", ".join(parse_hashtags(msg)) or None,
-            datetime.now().isoformat(),
+            datetime.now(),
         )
 
     def as_tuple(self):

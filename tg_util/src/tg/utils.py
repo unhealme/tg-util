@@ -31,19 +31,17 @@ if TYPE_CHECKING:
     from typing import Any
 
     from telethon import TelegramClient
-    from telethon.hints import Entity
+    from telethon.hints import EntitiesLike, Entity
     from telethon.network import MTProtoSender
     from telethon.tl.custom import Message
     from telethon.tl.custom.file import File
-
-type USERNAME_OR_ID = str | int | PeerChannel | PeerChat | PeerUser
 
 
 ENTITIES: dict[str, "Entity"] = {}
 SENDERS: dict[int, "MTProtoSender"] = {}
 
 
-async def resolve_entity(client: "TelegramClient", e: USERNAME_OR_ID) -> "Entity":
+async def resolve_entity(client: "TelegramClient", e: "EntitiesLike") -> "Entity":
     if isinstance(e, str) and e.isdigit():
         e = int(e, 10)
     try:
@@ -69,15 +67,14 @@ async def get_file_hash(
     location: TypeInputFileLocation,
 ):
     """raises: LocationInvalidError"""
-    hashes: list[FileHash]
     if dc_id and dc_id != client.session.dc_id:  # type: ignore
         try:
             sender = SENDERS[dc_id]
         except KeyError:
             sender = SENDERS[dc_id] = await client._borrow_exported_sender(dc_id)
-        hashes = await client._call(sender, GetFileHashesRequest(location, 0))
+        hashes = await client._call(sender, GetFileHashesRequest(location, 0))  # type: ignore
     else:
-        hashes = await client(GetFileHashesRequest(location, 0))
+        hashes: list[FileHash] = await client(GetFileHashesRequest(location, 0))
     file_hash = blake2b()
     for fh in hashes:
         file_hash.update(fh.hash)
@@ -97,7 +94,7 @@ def parse_hashtags(msg: "Message") -> list[str]:
 
 
 def parse_entity(entity: "Any") -> tuple[str, str, str, int]:
-    """return: type, title, username, id"""
+    """return: class, title, username, id"""
     entity_username = entity_name = ""
     match entity:
         case User(
@@ -162,6 +159,7 @@ async def iter_messages(
     ids: int | None = None,
     min_id: int = 0,
     max_id: int = 0,
+    wait_time: float | None = None,
     reverse: bool = False,
     with_reply: bool = True,
 ) -> "AsyncIterator[tuple[Message, int | None]]":
@@ -171,6 +169,7 @@ async def iter_messages(
         ids=ids,  # type: ignore
         min_id=min_id,
         max_id=max_id,
+        wait_time=wait_time,  # type: ignore
         reverse=reverse,
     ):
         if not message:
@@ -179,7 +178,11 @@ async def iter_messages(
         match with_reply, message.replies:
             case True, MessageReplies(replies=replies) if replies > 0:
                 reply_id = 0
-                async for reply in client.iter_messages(entity, reply_to=message.id):
+                async for reply in client.iter_messages(
+                    entity,
+                    wait_time=wait_time,  # type: ignore
+                    reply_to=message.id,
+                ):
                     if not reply:
                         continue
                     yield reply, reply_id

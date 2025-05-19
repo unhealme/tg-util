@@ -6,18 +6,20 @@ if TYPE_CHECKING:
     from typing import Any, Self
     from urllib.parse import ParseResult
 
+    from tg_util.src.tg.messages.export import MessageExport
+
 
 class ArchiveBase(ABC):
     _params: "ParseResult"
     _lock: "Lock"
 
     @abstractmethod
-    def __init__(self, params: "ParseResult"): ...
+    def __init__(self, params: "ParseResult") -> None: ...
 
     @abstractmethod
     async def __aenter__(self) -> "Self": ...
     @abstractmethod
-    async def __aexit__(self, *_exc: "Any"): ...
+    async def __aexit__(self, *_exc: "Any") -> None: ...
 
     @abstractmethod
     async def prepare(self) -> None: ...
@@ -51,3 +53,5 @@ class ArchiveBase(ABC):
         duration: float | None,
         type: str,
     ) -> None: ...
+    @abstractmethod
+    async def export(self, message: "MessageExport") -> None: ...

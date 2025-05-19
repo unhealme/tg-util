@@ -1,7 +1,7 @@
 from asyncio import Lock
 from datetime import datetime
 
-from asyncpg import Pool, Record, create_pool
+from asyncpg import Pool, Record, UniqueViolationError, create_pool
 
 from .base import ArchiveBase
 
@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from urllib.parse import ParseResult
 
     from _typeshed import Unused
+
+    from tg_util.src.tg.messages.export import MessageExport
 
 
 class PSQLArchive(ArchiveBase):
@@ -100,26 +102,49 @@ class PSQLArchive(ArchiveBase):
         duration: float | None,
         type: str,
     ):
+        insert = (
+            "insert into _archive_ (file_id, msg, msg_id, chat_id, "
+            "username, hash, width, height, size, duration, type) "
+            "values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            file_id,
+            msg,
+            msg_id,
+            chat_id,
+            chat_username,
+            hash.hex(),
+            width,
+            height,
+            size,
+            duration,
+            type,
+        )
         async with self._lock, self._pool.acquire() as con:
-            async with con.transaction():
-                await con.execute(
-                    "delete from _archive_ where file_id = $1 or hash = $2",
-                    file_id,
-                    hash.hex(),
-                )
-                await con.execute(
-                    "insert into _archive_ (file_id, msg, msg_id, chat_id, "
-                    "username, hash, width, height, size, duration, type) "
-                    "values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-                    file_id,
-                    msg,
-                    msg_id,
-                    chat_id,
-                    chat_username,
-                    hash.hex(),
-                    width,
-                    height,
-                    size,
-                    duration,
-                    type,
-                )
+            try:
+                await con.execute(*insert)
+            except UniqueViolationError:
+                async with con.transaction():
+                    await con.execute(
+                        "delete from _archive_ where file_id = $1 or hash = $2",
+                        file_id,
+                        hash.hex(),
+                    )
+                    await con.execute(*insert)
+
+    async def export(self, message: "MessageExport"):
+        insert = (
+            "insert into _all_chats_ values ($1, $2, $3, $4, $5, $6, $7, "
+            "$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, "
+            "$20, $21, $22, $23, $24, $25, $26, $27, $28)",
+            *message.as_tuple(),
+        )
+        async with self._pool.acquire() as con:
+            try:
+                await con.execute(*insert)
+            except UniqueViolationError:
+                async with con.transaction():
+                    await con.execute(
+                        "delete from _all_chats_ where chat_id = $1 and message_id = $2",
+                        message.chat_id,
+                        message.message_id,
+                    )
+                    await con.execute(*insert)

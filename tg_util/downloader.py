@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "b2025.05.14-2"
+__version__ = "r2025.05.19-0"
 
 import asyncio
 import contextlib
@@ -37,7 +37,7 @@ from .src.types import (
     MessageValidationError,
 )
 from .src.types.tqdm import tqdm
-from .src.utils import format_duration, round_size, wrap_async
+from .src.utils import format_duration, parse_proxy, round_size, wrap_async
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -97,6 +97,7 @@ class Arguments(ARGSBase):
 class Config(Decodable):
     archive: str | UnsetType = UNSET
     create_sheet: bool | UnsetType = UNSET
+    debug: bool | UnsetType = UNSET
     download_path: str | UnsetType = UNSET
     download_threads: int | UnsetType = UNSET
     overwrite: bool | UnsetType = UNSET
@@ -118,11 +119,12 @@ class TGDownloader(ABC):
     _archive: arc.ArchiveBase
     _args: Arguments
     _client: TelegramClient
+    _client_orig: TelegramClient
     _input: InputFile
     _mode: Mode
-    _no_takeout: TelegramClient
     _sheet: SheetGenerator
     _tasks: set[asyncio.Task[DownloadResult]]
+    _wait_time: float | None
     _wrapper: InputMessageWrapper
 
     @property
@@ -133,12 +135,15 @@ class TGDownloader(ABC):
         self._args = args
         self._client = client
         self._mode = args.mode
+        self._wait_time = None
         self._tasks = set()
         self._archive = arc.open(urlparse(self._args.archive))
         if args.file:
             self._input = args.file
         if args.create_sheet:
             self._sheet = SheetGenerator()
+        if self._args.use_takeout:
+            self._wait_time = 0.0
         self._wrapper = InputMessageWrapper(
             self._client,
             self._args.download_path or Path.cwd(),
@@ -153,14 +158,14 @@ class TGDownloader(ABC):
             self._sheet = self._sheet.__enter__()
         self._client = await self._client.__aenter__()
         if self._args.use_takeout:
-            self._no_takeout = self._client
+            self._client_orig = self._client
             self._client = await self._client.takeout().__aenter__()
         return self
 
     async def __aexit__(self, *_exc: "Any"):
         if self._args.use_takeout:
             await self._client.__aexit__(*_exc)
-            self._client = self._no_takeout
+            self._client = self._client_orig
         await self._client.__aexit__(*_exc)
         await self._archive.__aexit__(*_exc)
         if self._args.create_sheet:
@@ -213,6 +218,7 @@ class TGDownloader(ABC):
                 self._client,
                 entity,
                 ids=msg_id,
+                wait_time=self._wait_time,
             ):
                 if done := await self.add_task(
                     self.validate(message, entity, reply_id, lnum=lnum)
@@ -233,10 +239,13 @@ class TGDownloader(ABC):
         logger.debug("processing entity: %s", {raw_entity: str(entity)})
         prog.set_description(str(raw_entity))
         prog.reset(0)
+        prog.update
         for start_id, end_id in ids:
             logger.debug("processing start: %s, end: %s", start_id, end_id)
             if end_id is None:
-                pool = iter_messages(self._client, entity, ids=start_id)
+                pool = iter_messages(
+                    self._client, entity, ids=start_id, wait_time=self._wait_time
+                )
                 prog.total += 1
             else:
                 if end_id == 0:
@@ -252,10 +261,12 @@ class TGDownloader(ABC):
                     entity,
                     min_id=start_id,
                     max_id=end_id,
+                    wait_time=self._wait_time,
                     reverse=self._args.reverse_download,
                 )
             async for message, reply_id in pool:
-                prog.update(1)
+                if reply_id is None:
+                    prog.update(1)
                 await self.add_task(self.validate(message, entity, reply_id))
             prog.refresh()
 
@@ -502,26 +513,6 @@ def __main__():
     aio.run(main())
 
 
-def parse_proxy(url: ParseResult):
-    from python_socks import ProxyType
-
-    proxy: dict[str, Any] = {}
-    match url.scheme.lower():
-        case "socks" | "socks5":
-            proxy["proxy_type"] = ProxyType.SOCKS5
-        case "socks4":
-            proxy["proxy_type"] = ProxyType.SOCKS4
-        case "http" | "https":
-            proxy["proxy_type"] = ProxyType.HTTP
-    proxy["addr"] = url.hostname
-    proxy["port"] = url.port
-    if url.username:
-        proxy["username"] = url.username
-    if url.password:
-        proxy["password"] = url.password
-    return proxy
-
-
 def parse_url_group(s: str) -> tuple[str | int, int]:
     for pat in (
         re.compile(r"((?:https?://)?t.me/\w+)/(\d+)$"),
@@ -562,7 +553,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "-p",
         "--download-path",
-        action="store",
         type=Path,
         default=None,
         help="(default to current directory)",
@@ -572,7 +562,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "-t",
         "--download-threads",
-        action="store",
         type=lambda i: int(i, 10),
         default=8,
         help="(default to: 8)",
@@ -614,7 +603,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     )
     inputs.add_argument(
         "-f",
-        action="store",
         type=InputFile,
         help="download URL(s) from FILE",
         dest="file",
@@ -632,7 +620,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     options.add_argument(
         "-s",
         "--session",
-        action="store",
         type=urlparse,
         metavar="mysql://user:pass@host:port/schema?api_id=id&api_hash=hash",
         dest="session",

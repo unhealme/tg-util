@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from typing import Any
     from urllib.parse import ParseResult
 
+    from tg_util.src.tg.messages.export import MessageExport
+
 
 class SQLiteArchive(ArchiveBase):
     _conn: Connection
@@ -135,3 +137,6 @@ class SQLiteArchive(ArchiveBase):
                     type,
                 ),
             )
+
+    async def export(self, message: "MessageExport"):
+        raise NotImplementedError

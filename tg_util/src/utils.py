@@ -2,11 +2,12 @@ from asyncio.events import get_running_loop
 from datetime import timedelta
 from functools import partial
 from inspect import iscoroutinefunction
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 if TYPE_CHECKING:
     from asyncio import AbstractEventLoop
     from collections.abc import Awaitable, Callable
+    from urllib.parse import ParseResult
 
 
 def round_size(n: float | int) -> str:
@@ -22,6 +23,26 @@ def round_size(n: float | int) -> str:
 
 def format_duration(secs: float) -> str:
     return str(timedelta(seconds=secs))
+
+
+def parse_proxy(url: "ParseResult"):
+    from python_socks import ProxyType
+
+    proxy: dict[str, Any] = {}
+    match url.scheme.lower():
+        case "socks" | "socks5":
+            proxy["proxy_type"] = ProxyType.SOCKS5
+        case "socks4":
+            proxy["proxy_type"] = ProxyType.SOCKS4
+        case "http" | "https":
+            proxy["proxy_type"] = ProxyType.HTTP
+    proxy["addr"] = url.hostname
+    proxy["port"] = url.port
+    if url.username:
+        proxy["username"] = url.username
+    if url.password:
+        proxy["password"] = url.password
+    return proxy
 
 
 _loop: "AbstractEventLoop"
