@@ -1,4 +1,5 @@
 from hashlib import blake2b
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from telethon.tl.functions.upload import GetFileHashesRequest
 from telethon.tl.types import (
@@ -10,6 +11,8 @@ from telethon.tl.types import (
     Document,
     DocumentAttributeVideo,
     FileHash,
+    InputMessagesFilterDocument,
+    InputMessagesFilterPhotoVideo,
     MessageEntityHashtag,
     MessageReplies,
     PeerChannel,
@@ -23,15 +26,13 @@ from telethon.tl.types import (
 )
 from telethon.utils import get_inner_text
 
-from tg_util.src.types import FileAttribute, FileType
+from tg_util.src.types import EntityStats, FileAttribute, FileType
 
-TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from typing import Any
 
     from telethon import TelegramClient
-    from telethon.hints import EntitiesLike, Entity
+    from telethon.hints import Entity
     from telethon.network import MTProtoSender
     from telethon.tl.custom import Message
     from telethon.tl.custom.file import File
@@ -41,24 +42,36 @@ ENTITIES: dict[str, "Entity"] = {}
 SENDERS: dict[int, "MTProtoSender"] = {}
 
 
-async def resolve_entity(client: "TelegramClient", e: "EntitiesLike") -> "Entity":
+@overload
+async def resolve_entity(
+    c: "TelegramClient",
+    e: "Any",
+    with_stats: Literal[True],
+) -> tuple["Entity", EntityStats]: ...
+@overload
+async def resolve_entity(
+    c: "TelegramClient",
+    e: "Any",
+    with_stats: bool = False,
+) -> "Entity": ...
+async def resolve_entity(c: "TelegramClient", e: "Any", with_stats: bool = False):
     if isinstance(e, str) and e.isdigit():
         e = int(e, 10)
     try:
-        return ENTITIES[str(e)]
+        entity: Entity = ENTITIES[str(e)]
     except KeyError:
         if isinstance(e, int):
             try:
-                entity = await client.get_entity(PeerChannel(e))
+                entity = await c.get_entity(PeerChannel(e))  # type: ignore
             except Exception:
                 try:
-                    entity = await client.get_entity(PeerChat(e))
+                    entity = await c.get_entity(PeerChat(e))  # type: ignore
                 except Exception:
-                    entity = await client.get_entity(PeerUser(e))
+                    entity = await c.get_entity(PeerUser(e))  # type: ignore
         else:
-            entity = await client.get_entity(e)
+            entity = await c.get_entity(e)  # type: ignore
         ENTITIES[str(e)] = entity  # type: ignore
-    return entity  # type: ignore
+    return (entity, await get_entity_stats(c, entity)) if with_stats else entity
 
 
 async def get_file_hash(
@@ -153,12 +166,36 @@ def get_file_attr(file: "File"):
     return FileAttribute(width, height, duration, size, ftype, file.media.id)
 
 
+async def get_entity_stats(c: "TelegramClient", e: "Entity"):
+    type, title, username, id = parse_entity(e)
+    media_count = getattr(
+        await c.get_messages(e, 0, filter=InputMessagesFilterPhotoVideo),
+        "total",
+        0,
+    )
+    file_count = getattr(
+        await c.get_messages(e, 0, filter=InputMessagesFilterDocument),
+        "total",
+        0,
+    )
+    message_count = getattr(await c.get_messages(e, 0), "total", -1)
+    return EntityStats(
+        type,
+        title,
+        username,
+        id,
+        media_count,
+        file_count,
+        message_count,
+    )
+
+
 async def iter_messages(
     client: "TelegramClient",
     entity: "Entity",
     ids: int | None = None,
-    min_id: int = 0,
     max_id: int = 0,
+    min_id: int = 0,
     wait_time: float | None = None,
     reverse: bool = False,
     with_reply: bool = True,
@@ -167,8 +204,8 @@ async def iter_messages(
     async for message in client.iter_messages(
         entity,
         ids=ids,  # type: ignore
-        min_id=min_id,
         max_id=max_id,
+        min_id=min_id,
         wait_time=wait_time,  # type: ignore
         reverse=reverse,
     ):

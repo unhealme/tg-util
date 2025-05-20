@@ -32,3 +32,17 @@ class FileAttribute(Struct):
     size: int | None
     type: FileType
     id: int
+
+
+class EntityStats(Struct):
+    type: str
+    title: str
+    username: str
+    id: int
+    medias: int
+    files: int
+    messages: int
+
+    @property
+    def ratio(self):
+        return (self.medias + self.files) / self.messages
