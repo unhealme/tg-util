@@ -57,13 +57,16 @@ class MessageExport(Struct, array_like=True):
     @classmethod
     def from_message(cls, msg: "Message"):
         assert msg.date
-        try:
-            _, sender_name, sender_username, sender_id = parse_entity(msg.sender)
-        except TypeError:
-            logger.warning(
-                "unable to parse sender for entity %s: %r", type(msg.sender), msg.sender
-            )
-            sender_name = sender_username = sender_id = None
+        sender_name = sender_username = sender_id = None
+        if msg.sender is not None:
+            try:
+                _, sender_name, sender_username, sender_id = parse_entity(msg.sender)
+            except TypeError:
+                logger.warning(
+                    "unable to parse sender for entity %s: %r",
+                    type(msg.sender),
+                    msg.sender,
+                )
 
         _, chat_name, chat_username, _ = parse_entity(msg.chat)
         clean_text = None
