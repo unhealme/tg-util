@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "r2025.05.21-2"
+__version__ = "r2025.05.21-3"
 
 import logging
 from argparse import ArgumentParser
@@ -295,7 +295,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     options.add_argument(
         "-a",
         "--archive",
-        type=urlparse,
         dest="archive",
         default="sqlite::memory:",
         metavar="{sqlite,mysql}://user:pass@host:port/schema",
@@ -303,7 +302,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     options.add_argument(
         "-s",
         "--session",
-        type=urlparse,
         metavar="mysql://user:pass@host:port/schema?api_id=id&api_hash=hash",
         dest="session",
     )
@@ -318,7 +316,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     )
     options.add_argument(
         "--proxy",
-        type=urlparse,
         default=None,
         dest="proxy",
         metavar="{http,socks4,socks5}://user:pass@host:port",
