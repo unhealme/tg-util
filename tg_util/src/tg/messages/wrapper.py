@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 class InputMessageWrapper(Struct):
     client: "TelegramClient"
     dl_path: "Path"
+    categorize: bool
     create_sheet: bool
     overwrite: bool
     thumbs_only: bool
@@ -75,7 +76,9 @@ class InputMessageWrapper(Struct):
         )
         if file_attr.type is FileType.Other:
             base_name = file_name or base_name
-        if chat_username:
+        if not self.categorize:
+            dl_path = self.dl_path
+        elif chat_username:
             dl_path = self.dl_path / f"@{chat_username}"
         else:
             dl_path = self.dl_path / str(chat_id)

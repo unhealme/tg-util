@@ -19,7 +19,7 @@ class InputFile(ABC):
         self._write_lock = Lock()
 
     def __repr__(self):
-        return f"<{self.__class__.__name__}: {self._fpath}>"
+        return f"{self.__class__.__name__}({self._fpath})"
 
     def __len__(self) -> int:
         return self.content.__len__()

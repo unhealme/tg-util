@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-__version__ = "r2025.05.21-0"
+__version__ = "r2025.05.23-0"
 
 import asyncio
 import contextlib
 import logging
 import re
 import sys
-from argparse import ArgumentParser
+from argparse import ArgumentParser, BooleanOptionalAction
 from enum import Enum
 from pathlib import Path
 from urllib.parse import ParseResult, parse_qs, urlparse
@@ -67,6 +67,7 @@ class Mode(Enum):
 
 class Arguments(ARGSBase):
     archive: str
+    categorize: bool
     config: Path | None
     download_path: Path | None
     download_threads: int
@@ -96,6 +97,7 @@ class Arguments(ARGSBase):
 
 class Config(Decodable):
     archive: str | UnsetType = UNSET
+    categorize: bool | UnsetType = UNSET
     create_sheet: bool | UnsetType = UNSET
     debug: bool | UnsetType = UNSET
     download_path: str | UnsetType = UNSET
@@ -145,11 +147,12 @@ class TGDownloader(ABC):
         if self._args.use_takeout:
             self._wait_time = 0.0
         self._wrapper = InputMessageWrapper(
-            self._client,
-            self._args.download_path or Path.cwd(),
-            self._args.create_sheet,
-            self._args.overwrite,
-            self._args.thumbs_only,
+            client,
+            args.download_path or Path.cwd(),
+            args.categorize,
+            args.create_sheet,
+            args.overwrite,
+            args.thumbs_only,
         )
 
     async def __aenter__(self):
@@ -555,7 +558,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "--download-path",
         type=Path,
         default=None,
-        help="(default to current directory)",
+        help="(default: current directory)",
         metavar="PATH",
         dest="download_path",
     )
@@ -564,32 +567,43 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "--download-threads",
         type=lambda i: int(i, 10),
         default=8,
-        help="(default to: 8)",
+        help="(default: %(default)s)",
         metavar="NUM",
         dest="download_threads",
     )
     downloads.add_argument(
-        "--no-overwrite",
-        action="store_false",
-        help="don't overwrite downloaded files",
+        "--categorize",
+        action=BooleanOptionalAction,
+        default=True,
+        help="categorize downloads by chat username/id (default: %(default)s)",
+        dest="categorize",
+    )
+    downloads.add_argument(
+        "--overwrite",
+        action=BooleanOptionalAction,
+        default=True,
+        help="overwrite downloaded files (default: %(default)s)",
         dest="overwrite",
     )
     downloads.add_argument(
         "--reverse-download",
-        action="store_true",
-        help="download URL(s) in ascending order",
+        action=BooleanOptionalAction,
+        default=False,
+        help="download URL(s) in ascending order (default: %(default)s)",
         dest="reverse_download",
     )
     downloads.add_argument(
         "--single-url",
-        action="store_true",
-        help="only fetch single message per URL(s)",
+        action=BooleanOptionalAction,
+        default=False,
+        help="only fetch single message per URL(s) (default: %(default)s)",
         dest="single_url",
     )
     downloads.add_argument(
         "--thumbs-only",
-        action="store_true",
-        help="download only thumbnails on videos",
+        action=BooleanOptionalAction,
+        default=False,
+        help="download only thumbnails on videos (default: %(default)s)",
         dest="thumbs_only",
     )
     inputs = parser.add_argument_group("inputs")
@@ -639,15 +653,17 @@ def parse_args(_args: "Sequence[str] | None" = None):
     )
     options.add_argument(
         "--takeout",
-        action="store_true",
+        action=BooleanOptionalAction,
+        default=False,
         dest="use_takeout",
-        help="use takeout session",
+        help="use takeout session (default: %(default)s)",
     )
     post = parser.add_argument_group("post-dl")
     post.add_argument(
         "--create-sheet",
-        action="store_true",
-        help="create video contact sheets on videos",
+        action=BooleanOptionalAction,
+        default=False,
+        help="create video contact sheets on videos (default: %(default)s)",
         dest="create_sheet",
     )
     post.add_argument(
