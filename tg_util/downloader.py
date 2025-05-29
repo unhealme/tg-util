@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "r2025.05.23-0"
+__version__ = "r2025.05.29-0"
 
 import asyncio
 import contextlib
@@ -166,13 +166,13 @@ class TGDownloader(ABC):
         return self
 
     async def __aexit__(self, *_exc: "Any"):
+        await self.wait_tasks()
         if self._args.use_takeout:
             await self._client.__aexit__(*_exc)
             self._client = self._client_orig
         await self._client.__aexit__(*_exc)
         await self._archive.__aexit__(*_exc)
         if self._args.create_sheet:
-            logger.debug("closing sheet generator")
             self._sheet.__exit__(*_exc)
 
     async def run(self):
@@ -203,7 +203,6 @@ class TGDownloader(ABC):
                             else:
                                 ids = (message_id - 1, 0)
                             await self.process_ids(entity, [ids], subprog)
-        await self.wait_tasks()
 
     async def process_file(self):
         async for lnum, line in tqdm(aiter(self._input), "Overall", len(self._input)):
@@ -229,7 +228,9 @@ class TGDownloader(ABC):
                     for t in done:
                         yield t
         for t in asyncio.as_completed(self._tasks):
-            yield await t
+            r = await self._handle_or_return(t)
+            if r:
+                yield r
         self._tasks.clear()
 
     async def process_ids(
@@ -394,6 +395,7 @@ class TGDownloader(ABC):
     async def wait_tasks(self):
         for t in asyncio.as_completed(self._tasks):
             await self._handle_or_return(t)
+        self._tasks.clear()
 
     async def download_message(self, message: MessageWrapped, **ctx: "Any"):
         download_success = False
