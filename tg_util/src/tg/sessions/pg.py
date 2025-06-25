@@ -1,14 +1,17 @@
 """psql session for telethon
 
 changes:
-- tables must be created manually
+- tables are not auto create
 - no version table
 """
 # pyright: reportIncompatibleMethodOverride=false
 
+import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from threading import Thread
 
-from psycopg import Connection, connect
+from asyncpg import Connection, Record, connect
 from telethon.crypto import AuthKey
 from telethon.sessions.memory import MemorySession, _SentFileType
 from telethon.sessions.sqlite import CURRENT_VERSION as UPSTREAM_VERSION
@@ -25,17 +28,16 @@ from telethon.utils import get_peer_id
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-    from typing import Any
-
-    from psycopg.abc import Params, Query
-    from psycopg.rows import TupleRow
+    from typing import Any, Coroutine
 
 CURRENT_VERSION = 7
 
 
 class PSQLSession(MemorySession):
-    _conn: Connection["TupleRow"]
+    _conn: "Connection[Record]"
+    _loop: asyncio.AbstractEventLoop
+    _schema: str
+    _thread: Thread
 
     def __init__(
         self,
@@ -53,17 +55,22 @@ class PSQLSession(MemorySession):
             raise RuntimeError(err)
         super().__init__()
         self.save_entities = True
-        self._conn = connect(
-            user=user,
-            password=password,
-            host=host,
-            port=port,
-            dbname=schema,
-            autocommit=True,
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._start_loop)
+        self._thread.start()
+        self._schema = schema
+        self._conn = self._wrap_sync(
+            connect(
+                user=user,
+                password=password,
+                host=host,
+                port=port,
+                database=schema,
+            )
         )
 
         # These values will be saved
-        result = self._fetchone("select * from sessions")
+        result = self._wrap_sync(self._conn.fetchrow("select * from sessions"))
         if result:
             (
                 self._dc_id,
@@ -75,7 +82,7 @@ class PSQLSession(MemorySession):
             self._auth_key = AuthKey(data=key)
 
     def __repr__(self) -> str:
-        return "<%s: %s>" % (self.__class__.__name__, self._conn.info.dbname)
+        return "<%s: %s>" % (self.__class__.__name__, self._schema)
 
     def clone(self, to_instance=None):
         cloned = super().clone(to_instance)
@@ -87,7 +94,7 @@ class PSQLSession(MemorySession):
         self._update_session_table()
 
         # Fetch the auth_key corresponding to this data center
-        row = self._fetchone("select auth_key from sessions")
+        row = self._wrap_sync(self._conn.fetchrow("select auth_key from sessions"))
         if row and row[0]:
             self._auth_key = AuthKey(data=row[0])
         else:
@@ -104,23 +111,25 @@ class PSQLSession(MemorySession):
         self._update_session_table()
 
     def _update_session_table(self):
-        with self._conn.transaction(), self._conn.cursor() as cur:
-            cur.execute("truncate sessions")
-            cur.execute(
-                "insert into sessions values(%s, %s, %s, %s, %s)",
-                (
+        with self._transactions():
+            self._wrap_sync(self._conn.execute("truncate sessions"))
+            self._wrap_sync(
+                self._conn.execute(
+                    "insert into sessions values($1, $2, $3, $4, $5)",
                     self._dc_id,
                     self._server_address,
                     self._port,
                     self._auth_key.key if self._auth_key else b"",
                     self._takeout_id,
-                ),
+                )
             )
 
     def get_update_state(self, entity_id: int):
-        row = self._fetchone(
-            'select pts, qts, "date", seq from update_state where id = %s',
-            (entity_id,),
+        row = self._wrap_sync(
+            self._conn.fetchrow(
+                'select pts, qts, "date", seq from update_state where id = $1',
+                entity_id,
+            )
         )
         if row:
             pts, qts, date, seq = row
@@ -129,37 +138,38 @@ class PSQLSession(MemorySession):
 
     def set_update_state(self, entity_id: int, state: State):
         assert state.date
-        self._executeonly(
-            "insert into update_state values (%(0)s, %(1)s, %(2)s, %(3)s, %(4)s) "
-            "on conflict (id) do update set "
-            'pts = %(1)s, qts = %(2)s, "date" = %(3)s, seq = %(4)s',
-            {
-                "0": entity_id,
-                "1": state.pts,
-                "2": state.qts,
-                "3": state.date.timestamp(),
-                "4": state.seq,
-            },
+        self._wrap_sync(
+            self._conn.execute(
+                "insert into update_state values ($1, $2, $3, $4, $5) "
+                "on conflict (id) do update set pts = $2, qts = $3, "
+                '"date" = $4, seq = $5',
+                entity_id,
+                state.pts,
+                state.qts,
+                state.date.timestamp(),
+                state.seq,
+            )
         )
 
     def get_update_states(self):
-        with self._conn.cursor() as cur:
-            cur.execute("select * from update_state")
-            for row in cur:
-                yield (
-                    row[0],
-                    State(
-                        pts=row[1],
-                        qts=row[2],
-                        date=datetime.fromtimestamp(row[3], tz=timezone.utc),
-                        seq=row[4],
-                        unread_count=0,
-                    ),
-                )
+        rows = self._wrap_sync(self._conn.fetch("select * from update_state"))
+        for row in rows:
+            yield (
+                row[0],
+                State(
+                    pts=row[1],
+                    qts=row[2],
+                    date=datetime.fromtimestamp(row[3], tz=timezone.utc),
+                    seq=row[4],
+                    unread_count=0,
+                ),
+            )
 
     def close(self):
         """Closes the connection unless we're working in-memory"""
-        self._conn.close()
+        self._wrap_sync(self._conn.close())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
 
     def process_entities(self, tlo: TLObject):
         """
@@ -174,79 +184,73 @@ class PSQLSession(MemorySession):
             return
 
         now = int(datetime.now().timestamp())
-        self._executemany(
-            "insert into entities values (%(0)s, %(1)s, %(2)s, %(3)s, %(4)s, %(5)s) "
-            "on conflict (id) do update set hash = %(1)s, username = %(2)s, "
-            'phone = %(3)s, name = %(4)s, "date" = %(5)s',
-            (
-                {
-                    "0": row[0],
-                    "1": row[1],
-                    "2": row[2],
-                    "3": row[3],
-                    "4": row[4],
-                    "5": now,
-                }
-                for row in rows
-            ),
+        self._wrap_sync(
+            self._conn.executemany(
+                "insert into entities values ($1, $2, $3, $4, $5, $6) "
+                "on conflict (id) do update set hash = $2, username = $3, "
+                'phone = $4, name = $5, "date" = $6',
+                ((*row, now) for row in rows),
+            )
         )
 
-    def get_entity_rows_by_phone(self, phone: int):
-        return self._fetchone(
-            "select id, hash from entities where phone = %s",
-            (phone,),
+    def get_entity_rows_by_phone(self, phone: int):  # type: ignore
+        return self._wrap_sync(
+            self._conn.fetchrow(
+                "select id, hash from entities where phone = $1",
+                phone,
+            )
         )
 
     def get_entity_rows_by_username(self, username: str):
-        with self._conn.cursor() as cur:
-            rows = cur.execute(
-                'select id, hash, "date" from entities where username = %s',
-                (username),
-            ).fetchall()
-
-            if not rows:
-                return None
-
-            # If there is more than one result for the same username, evict the oldest one
-            if len(rows) > 1:
-                rows.sort(key=lambda t: t[2] or 0)
-                cur.executemany(
-                    "update entities set username = null where id = %s",
-                    ((r[0],) for r in rows[:-1]),
-                )
-            row = rows[-1]
-            return row[0], row[1]
-
-    def get_entity_rows_by_name(self, name: str):
-        return self._fetchone(
-            "select id, hash from entities where name = %s",
-            (name,),
+        rows = self._wrap_sync(
+            self._conn.fetch(
+                'select id, hash, "date" from entities where username = $1',
+                username,
+            )
         )
 
-    def get_entity_rows_by_id(self, id: int, exact: bool = True):
+        if not rows:
+            return None
+
+        # If there is more than one result for the same username, evict the oldest one
+        if len(rows) > 1:
+            rows.sort(key=lambda t: t[2] or 0)
+            self._wrap_sync(
+                self._conn.executemany(
+                    "update entities set username = null where id = $1",
+                    ((r[0],) for r in rows[:-1]),
+                )
+            )
+        row = rows[-1]
+        return row[0], row[1]
+
+    def get_entity_rows_by_name(self, name: str):  # type: ignore
+        return self._wrap_sync(
+            self._conn.fetchrow("select id, hash from entities where name = $1", name)
+        )
+
+    def get_entity_rows_by_id(self, id: int, exact: bool = True):  # type: ignore
         q: tuple[Any, ...] = ()
         if exact:
-            q = ("select id, hash from entities where id = %s", (id,))
+            q = ("select id, hash from entities where id = $1", id)
         else:
             q = (
-                "select id, hash from entities where id in (%s, %s, %s)",
-                (
-                    get_peer_id(PeerUser(id)),
-                    get_peer_id(PeerChat(id)),
-                    get_peer_id(PeerChannel(id)),
-                ),
+                "select id, hash from entities where id in ($1, $2, $3)",
+                get_peer_id(PeerUser(id)),
+                get_peer_id(PeerChat(id)),
+                get_peer_id(PeerChannel(id)),
             )
-        return self._fetchone(*q)
+        return self._wrap_sync(self._conn.fetchrow(*q))
 
     def get_file(self, md5_digest: bytes, file_size: int, cls: "Any"):
-        if row := self._fetchone(
-            "select id, hash from sent_files where "
-            "md5_digest = %s and file_size = %s and type = %s",
-            (
+        if row := self._wrap_sync(
+            self._conn.fetchrow(
+                "select id, hash from sent_files where "
+                "md5_digest = $1 and file_size = $2 and type = $3",
                 md5_digest,
                 file_size,
                 _SentFileType.from_type(cls).value,
-            ),
+            )
         ):
             # Both allowed classes have (id, access_hash) as parameters
             return cls(row[0], row[1])
@@ -254,28 +258,33 @@ class PSQLSession(MemorySession):
     def cache_file(self, md5_digest: bytes, file_size: int, instance: "Any"):
         if not isinstance(instance, (InputDocument, InputPhoto)):
             raise TypeError("Cannot cache %s instance" % type(instance))
-        self._executeonly(
-            "insert into sent_files values (%(0)s, %(1)s, %(2)s, %(3)s, %(4)s) "
-            "on conflict (md5_digest, file_size, type) do update set "
-            "id = %(3)s, hash = %(4)s",
-            {
-                "0": md5_digest,
-                "1": file_size,
-                "2": _SentFileType.from_type(type(instance)).value,
-                "3": instance.id,
-                "4": instance.access_hash,
-            },
+        self._wrap_sync(
+            self._conn.execute(
+                "insert into sent_files values ($1, $2, $3, $4, $5) "
+                "on conflict (md5_digest, file_size, type) do update set "
+                "id = $4, hash = $5",
+                md5_digest,
+                file_size,
+                _SentFileType.from_type(type(instance)).value,
+                instance.id,
+                instance.access_hash,
+            )
         )
 
-    def _fetchone(self, query: "Query", params: "Params | None" = None):
-        with self._conn.cursor() as cur:
-            cur.execute(query, params)
-            return cur.fetchone()
+    def _wrap_sync[T](self, coro: "Coroutine[Any, Any, T]"):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
-    def _executeonly(self, query: "Query", params: "Params | None" = None):
-        with self._conn.cursor() as cur:
-            cur.execute(query, params)
+    @contextmanager
+    def _transactions(self):
+        t = self._conn.transaction()
+        try:
+            self._wrap_sync(t.start())
+            yield
+            self._wrap_sync(t.commit())
+        except BaseException:
+            self._wrap_sync(t.rollback())
+            raise
 
-    def _executemany(self, query: "Query", params: "Iterable[Params]"):
-        with self._conn.cursor() as cur:
-            cur.executemany(query, params)
+    def _start_loop(self):
+        self._loop.run_forever()
+        self._loop.close()
