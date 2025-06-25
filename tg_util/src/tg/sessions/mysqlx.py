@@ -1,7 +1,7 @@
 """mysql session for telethon
 
 changes:
-- tables are not auto create
+- tables must be created manually
 - no version table
 """
 
@@ -49,7 +49,7 @@ class MySQLXSession(MemorySession):
         if CURRENT_VERSION < UPSTREAM_VERSION:
             err = (
                 f"schema version {CURRENT_VERSION} is lower "
-                f"than upstream's: {UPSTREAM_VERSION}"
+                f"than upstream version {UPSTREAM_VERSION}"
             )
             raise RuntimeError(err)
         super().__init__()
@@ -149,7 +149,7 @@ class MySQLXSession(MemorySession):
 
     def set_update_state(self, entity_id: int, state: State):
         assert state.date
-        self._insert_or_update(
+        _insert_or_update(
             self.__tbl_update_state,
             "id",
             id=entity_id,
@@ -189,9 +189,6 @@ class MySQLXSession(MemorySession):
         self.save()
         return self.__session.close()
 
-    def delete(self):
-        pass
-
     def process_entities(self, tlo: TLObject):
         """
         Processes all the found entities on the given TLObject,
@@ -206,7 +203,7 @@ class MySQLXSession(MemorySession):
 
         now = int(datetime.now().timestamp())
         for row in rows:
-            self._insert_or_update(
+            _insert_or_update(
                 self.__tbl_entities,
                 "id",
                 id=row[0],
@@ -296,8 +293,7 @@ class MySQLXSession(MemorySession):
     def cache_file(self, md5_digest: bytes, file_size: int, instance: Any):
         if not isinstance(instance, (InputDocument, InputPhoto)):
             raise TypeError("Cannot cache %s instance" % type(instance))
-
-        self._insert_or_update(
+        _insert_or_update(
             self.__tbl_sent_files,
             "md5_digest",
             "file_size",
@@ -309,22 +305,22 @@ class MySQLXSession(MemorySession):
             hash=instance.access_hash,
         )
 
-    @staticmethod
-    def _insert_or_update(tbl: Table, /, *pks: str, **data: Any) -> Result:
-        qpks = [f"`{pk}`" for pk in pks]
-        qdata = {f"`{k}`": v for k, v in data.items()}
-        try:
-            return tbl.insert(*qdata.keys()).values(*qdata.values()).execute()
-        except OperationalError:
-            update = tbl.update()
-            for k, v in qdata.items():
-                if k not in qpks:
-                    if v is None:
-                        v = expr("null")
-                    update = update.set(k, v)
-            where: list[str] = []
-            binds: dict[str, Any] = {}
-            for n, pk in enumerate(qpks):
-                where.append(f"{pk} = :val{n}")
-                binds[f"val{n}"] = qdata[pk]
-            return update.where(" and ".join(where)).bind(binds).execute()
+
+def _insert_or_update(tbl: Table, /, *pks: str, **data: Any) -> Result:
+    qpks = [f"`{pk}`" for pk in pks]
+    qdata = {f"`{k}`": v for k, v in data.items()}
+    try:
+        return tbl.insert(*qdata.keys()).values(*qdata.values()).execute()
+    except OperationalError:
+        update = tbl.update()
+        for k, v in qdata.items():
+            if k not in qpks:
+                if v is None:
+                    v = expr("null")
+                update = update.set(k, v)
+        where: list[str] = []
+        binds: dict[str, Any] = {}
+        for n, pk in enumerate(qpks):
+            where.append(f"{pk} = :val{n}")
+            binds[f"val{n}"] = qdata[pk]
+        return update.where(" and ".join(where)).bind(binds).execute()

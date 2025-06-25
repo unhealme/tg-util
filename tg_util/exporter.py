@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "r2025.05.21-3"
+__version__ = "r2025.06.25-0"
 
 import logging
 from argparse import ArgumentParser
@@ -15,8 +15,8 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .src import ABC, ARGSBase, arc
 from .src.log import setup_logging
+from .src.tg import sessions
 from .src.tg.messages.export import MessageExport
-from .src.tg.sessions.mysqlx import MySQLXSession
 from .src.tg.utils import (
     get_entity_stats,
     iter_messages,
@@ -97,7 +97,7 @@ class TGExporter(ABC):
         self._takeout = args.takeout
         self._wait_time = 0.0 if args.takeout.use else None
         if self._args.to_db:
-            self._archive = arc.open(urlparse(self._args.archive))
+            self._archive = arc.create(urlparse(self._args.archive))
 
     async def __aenter__(self):
         if self._args.to_db:
@@ -201,21 +201,20 @@ async def main(_args: "Sequence[str] | None" = None):
     setup_logging((root,), debug=args.debug)
     logger.debug("using args: %s", args)
     match urlparse(args.session):
-        case ParseResult(
-            username=str(username),
-            password=str(password),
-            hostname=str(hostname),
-            port=int(port),
-            path=schema,
-            query=query,
+        case (
+            ParseResult(
+                username=str(),
+                password=str(),
+                hostname=str(),
+                port=int(),
+                query=query,
+            ) as url
         ):
             proxy = None
             if args.proxy:
                 proxy = parse_proxy(urlparse(args.proxy))
             qs = parse_qs(query)
-            session = MySQLXSession(
-                username, password, hostname, port, schema.strip("/")
-            )
+            session = sessions.create(url)
             client = TelegramClient(
                 session,
                 int(qs["api_id"][0], 10),

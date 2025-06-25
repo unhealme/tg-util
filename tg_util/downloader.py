@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-__version__ = "r2025.05.29-0"
+__version__ = "r2025.06.25-0"
 
 import asyncio
 import contextlib
@@ -21,8 +21,8 @@ from .src import ABC, ARGSBase, arc
 from .src.input import InputFile
 from .src.log import setup_logging
 from .src.sheet import SheetGenerator
+from .src.tg import sessions
 from .src.tg.messages.wrapper import InputMessageWrapper, MessageWrapped
-from .src.tg.sessions.mysqlx import MySQLXSession
 from .src.tg.utils import (
     get_file_attr,
     iter_messages,
@@ -139,7 +139,7 @@ class TGDownloader(ABC):
         self._mode = args.mode
         self._wait_time = None
         self._tasks = set()
-        self._archive = arc.open(urlparse(self._args.archive))
+        self._archive = arc.create(urlparse(self._args.archive))
         if args.file:
             self._input = args.file
         if args.create_sheet:
@@ -479,21 +479,20 @@ async def main(_args: "Sequence[str] | None" = None):
     setup_logging((root,), debug=args.debug)
     logger.debug("using args: %s", args)
     match urlparse(args.session):
-        case ParseResult(
-            username=str(username),
-            password=str(password),
-            hostname=str(hostname),
-            port=int(port),
-            path=schema,
-            query=query,
+        case (
+            ParseResult(
+                username=str(),
+                password=str(),
+                hostname=str(),
+                port=int(),
+                query=query,
+            ) as url
         ):
             proxy = None
             if args.proxy:
                 proxy = parse_proxy(urlparse(args.proxy))
             qs = parse_qs(query)
-            session = MySQLXSession(
-                username, password, hostname, port, schema.strip("/")
-            )
+            session = sessions.create(url)
             client = TelegramClient(
                 session,
                 int(qs["api_id"][0], 10),
