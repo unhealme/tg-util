@@ -1,4 +1,4 @@
-from asyncio import Lock
+from asyncio.locks import Lock
 from contextlib import asynccontextmanager
 from pathlib import Path
 

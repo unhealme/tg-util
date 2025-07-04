@@ -6,14 +6,14 @@ from .enums import FileType
 
 
 class Decodable(Struct):
-    __json_dec: ClassVar[json.Decoder[Self]]
+    __jdec__: ClassVar[json.Decoder[Self]]
 
     @classmethod
     def decode_json(cls, buf: bytes, /) -> Self:
         try:
-            return cls.__json_dec.decode(buf)
+            return cls.__jdec__.decode(buf)
         except AttributeError:
-            cls.__json_dec = json.Decoder(cls)
+            cls.__jdec__ = json.Decoder(cls)
             return cls.decode_json(buf)
 
     @classmethod

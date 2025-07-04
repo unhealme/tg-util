@@ -4,6 +4,7 @@ changes:
 - tables must be created manually
 - no version table
 """
+# pyright: reportIncompatibleMethodOverride=false
 
 import warnings
 from datetime import datetime, timezone
@@ -31,12 +32,13 @@ CURRENT_VERSION = 7
 
 
 class MySQLXSession(MemorySession):
-    __session: Session
     __schema: Schema
+    __session: Session
     __tbl_entities: Table
     __tbl_sent_files: Table
     __tbl_sessions: Table
     __tbl_update_state: Table
+    _closed: bool
 
     def __init__(
         self,
@@ -54,6 +56,7 @@ class MySQLXSession(MemorySession):
             raise RuntimeError(err)
         super().__init__()
         self.save_entities = True
+        self._closed = False
         self.__session = get_session(
             user=user,
             password=password,
@@ -69,7 +72,6 @@ class MySQLXSession(MemorySession):
         self.__tbl_sessions = self.__schema.get_table("sessions")
         self.__tbl_update_state = self.__schema.get_table("update_state")
 
-        # These values will be saved
         result = cast("Row | None", self.__tbl_sessions.select().execute().fetch_one())
         if result:
             (
@@ -84,6 +86,12 @@ class MySQLXSession(MemorySession):
     def __repr__(self) -> str:
         return "<%s: %s>" % (self.__class__.__name__, self.__schema.name)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: "Any"):
+        self.close()
+
     def clone(self, to_instance=None):
         cloned = super().clone(to_instance)
         cloned.save_entities = self.save_entities
@@ -92,8 +100,6 @@ class MySQLXSession(MemorySession):
     def set_dc(self, dc_id, server_address, port):
         super().set_dc(dc_id, server_address, port)
         self._update_session_table()
-
-        # Fetch the auth_key corresponding to this data center
         row = cast(
             "Row | None", self.__tbl_sessions.select("auth_key").execute().fetch_one()
         )
@@ -159,7 +165,7 @@ class MySQLXSession(MemorySession):
             seq=state.seq,
         )
 
-    def get_update_states(self):  # type: ignore
+    def get_update_states(self):
         rows = cast(
             "list[Row]",
             self.__tbl_update_state.select("id", "pts", "qts", "date", "seq")
@@ -179,21 +185,14 @@ class MySQLXSession(MemorySession):
             )
 
     def save(self):
-        """Saves the current session object as session_user_id.session"""
-        # This is a no-op if there are no changes to commit, so there's
-        # no need for us to keep track of an "unsaved changes" variable.
         return self.__session.commit()
 
     def close(self):
-        """Closes the connection unless we're working in-memory"""
-        self.save()
-        return self.__session.close()
+        if not self._closed:
+            self.save()
+            self.__session.close()
 
     def process_entities(self, tlo: TLObject):
-        """
-        Processes all the found entities on the given TLObject,
-        unless .save_entities is False.
-        """
         if not self.save_entities:
             return
 
@@ -214,7 +213,7 @@ class MySQLXSession(MemorySession):
                 date=now,
             )
 
-    def get_entity_rows_by_phone(self, phone: int):  # type: ignore
+    def get_entity_rows_by_phone(self, phone: int):
         result = cast(
             "RowResult",
             self.__tbl_entities.select("id", "hash")
@@ -233,11 +232,8 @@ class MySQLXSession(MemorySession):
             .execute(),
         )
         rows = cast("list[Row]", result.fetch_all())
-
         if not rows:
             return None
-
-        # If there is more than one result for the same username, evict the oldest one
         if len(rows) > 1:
             rows.sort(key=lambda t: t[2] or 0)
             update = (
@@ -248,7 +244,7 @@ class MySQLXSession(MemorySession):
         row = rows[-1]
         return row[0], row[1]
 
-    def get_entity_rows_by_name(self, name: str):  # type: ignore
+    def get_entity_rows_by_name(self, name: str):
         result = cast(
             "RowResult",
             self.__tbl_entities.select("id", "hash")
@@ -258,7 +254,7 @@ class MySQLXSession(MemorySession):
         )
         return result.fetch_one()
 
-    def get_entity_rows_by_id(self, id: int, exact: bool = True):  # type: ignore
+    def get_entity_rows_by_id(self, id: int, exact: bool = True):
         if exact:
             select = (
                 self.__tbl_entities.select("id", "hash")
@@ -287,12 +283,12 @@ class MySQLXSession(MemorySession):
             .execute(),
         )
         if row := cast("Row", result.fetch_one()):
-            # Both allowed classes have (id, access_hash) as parameters
             return cls(row[0], row[1])
 
     def cache_file(self, md5_digest: bytes, file_size: int, instance: Any):
         if not isinstance(instance, (InputDocument, InputPhoto)):
-            raise TypeError("Cannot cache %s instance" % type(instance))
+            err = f"Cannot cache {type(instance)} instance"
+            raise TypeError(err)
         _insert_or_update(
             self.__tbl_sent_files,
             "md5_digest",

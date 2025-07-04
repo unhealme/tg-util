@@ -1,12 +1,12 @@
-#!/usr/bin/env python
-__version__ = "r2025.06.25-0"
+__version__ = "r2025.07.01-0"
 
-import asyncio
+
 import contextlib
 import logging
 import re
 import sys
 from argparse import ArgumentParser, BooleanOptionalAction
+from asyncio.tasks import FIRST_COMPLETED, Task, as_completed, wait
 from enum import Enum
 from pathlib import Path
 from urllib.parse import ParseResult, parse_qs, urlparse
@@ -37,22 +37,28 @@ from .src.types import (
     MessageValidationError,
 )
 from .src.types.tqdm import tqdm
-from .src.utils import format_duration, parse_proxy, round_size, wrap_async
+from .src.utils import (
+    add_misc_args,
+    add_opts_args,
+    format_duration,
+    parse_proxy,
+    round_size,
+    wrap_async,
+)
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from asyncio import _CoroutineLike
+    from asyncio import Future, _CoroutineLike
     from collections.abc import Sequence
     from typing import Any
 
     from telethon.hints import Entity
     from telethon.tl.custom import Message
 
-
-logger = logging.getLogger(__name__)
-
 TQDM_ERR = DummyTqdmFile(sys.stderr)
 TQDM_OUT = DummyTqdmFile(sys.stdout)
+
+logger = logging.getLogger(__name__)
 
 
 class Mode(Enum):
@@ -125,7 +131,7 @@ class TGDownloader(ABC):
     _input: InputFile
     _mode: Mode
     _sheet: SheetGenerator
-    _tasks: set[asyncio.Task[DownloadResult]]
+    _tasks: set[Task[DownloadResult]]
     _wait_time: float | None
     _wrapper: InputMessageWrapper
 
@@ -165,15 +171,16 @@ class TGDownloader(ABC):
             self._client = await self._client.takeout().__aenter__()
         return self
 
-    async def __aexit__(self, *_exc: "Any"):
-        await self.wait_tasks()
+    async def __aexit__(self, exc_type: type[BaseException] | None, *exc: "Any"):
+        if exc_type is not KeyboardInterrupt:
+            await self.wait_tasks()
         if self._args.use_takeout:
-            await self._client.__aexit__(*_exc)
+            await self._client.__aexit__(exc_type, *exc)
             self._client = self._client_orig
-        await self._client.__aexit__(*_exc)
-        await self._archive.__aexit__(*_exc)
+        await self._client.__aexit__(exc_type, *exc)
+        await self._archive.__aexit__(exc_type, *exc)
         if self._args.create_sheet:
-            self._sheet.__exit__(*_exc)
+            self._sheet.__exit__(exc_type, *exc)
 
     async def run(self):
         logger.debug("current loop %s", self._loop)
@@ -227,7 +234,7 @@ class TGDownloader(ABC):
                 ):
                     for t in done:
                         yield t
-        for t in asyncio.as_completed(self._tasks):
+        for t in as_completed(self._tasks):
             r = await self._handle_or_return(t)
             if r:
                 yield r
@@ -274,7 +281,7 @@ class TGDownloader(ABC):
                 await self.add_task(self.validate(message, entity, reply_id))
             prog.refresh()
 
-    async def _handle_or_return(self, t: asyncio.Future[DownloadResult]):
+    async def _handle_or_return(self, t: "Future[DownloadResult]"):
         try:
             return await t
         except FileAlreadyExists as e:
@@ -384,16 +391,13 @@ class TGDownloader(ABC):
     async def add_task(self, task: "_CoroutineLike[DownloadResult]"):
         self._tasks.add(self._loop.create_task(task))
         if len(self._tasks) >= self._args.download_threads:
-            done, pending = await asyncio.wait(
-                self._tasks, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, pending = await wait(self._tasks, return_when=FIRST_COMPLETED)
             self._tasks.difference_update(done)
             self._tasks.update(pending)
             return [r for t in done if (r := await self._handle_or_return(t))]
-        return None
 
     async def wait_tasks(self):
-        for t in asyncio.as_completed(self._tasks):
+        for t in as_completed(self._tasks):
             await self._handle_or_return(t)
         self._tasks.clear()
 
@@ -503,18 +507,9 @@ async def main(_args: "Sequence[str] | None" = None):
             )
         case Never:
             argparser.error(f"invalid or incomplete session: {Never}")
-    with logging_redirect_tqdm((root,)):
+    with logging_redirect_tqdm((root,)), session:
         async with TGDownloader(args, client) as tgdl:
             await tgdl.run()
-
-
-def __main__():
-    try:
-        import uvloop as aio  # type: ignore
-    except ImportError:
-        aio = asyncio
-
-    aio.run(main())
 
 
 def parse_url_group(s: str) -> tuple[str | int, int]:
@@ -537,22 +532,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         action="store",
         metavar="URL",
     )
-    misc = parser.add_argument_group("misc")
-    misc.add_argument("-h", "--help", action="help", help="print this help and exit")
-    misc.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="enable debug log",
-        dest="debug",
-    )
-    misc.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        help="print version",
-        version=f"%(prog)s {__version__}",
-    )
+    add_misc_args(parser, __version__)
     downloads = parser.add_argument_group("downloads")
     downloads.add_argument(
         "-p",
@@ -623,35 +603,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         dest="file",
         metavar="FILE",
     )
-    options = parser.add_argument_group("options")
-    options.add_argument(
-        "-a",
-        "--archive",
-        dest="archive",
-        default="sqlite::memory:",
-        metavar="{sqlite,mysql}://user:pass@host:port/schema",
-    )
-    options.add_argument(
-        "-s",
-        "--session",
-        metavar="mysql://user:pass@host:port/schema?api_id=id&api_hash=hash",
-        dest="session",
-    )
-    options.add_argument(
-        "-c",
-        "--config",
-        type=Path,
-        default=None,
-        help="load config from FILE",
-        dest="config",
-        metavar="FILE",
-    )
-    options.add_argument(
-        "--proxy",
-        default=None,
-        dest="proxy",
-        metavar="{http,socks4,socks5}://user:pass@host:port",
-    )
+    options = add_opts_args(parser)
     options.add_argument(
         "--takeout",
         action=BooleanOptionalAction,
@@ -678,12 +630,11 @@ def parse_args(_args: "Sequence[str] | None" = None):
         config = Config.decode_yaml(args.config.read_bytes())
         for sf in config.__struct_fields__:
             sv = getattr(config, sf)
-            if sv is not UNSET:
+            if sv is not UNSET and sv != parser.get_default(sf):
                 match sf:
                     case "download_path":
                         sv = Path(sv)
                 setattr(args, sf, sv)
-    args = parser.parse_args(_args, args)
     if args.mode is Mode.Unset:
         if args.file:
             args.mode = Mode.File
@@ -713,3 +664,12 @@ def parse_args(_args: "Sequence[str] | None" = None):
         if not args._imsg_id:
             parser.error("not enough input")
     return parser, args
+
+
+def __main__():
+    try:
+        import uvloop as aio  # type: ignore
+    except ImportError:
+        import asyncio as aio
+
+    aio.run(main())

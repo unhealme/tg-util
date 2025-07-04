@@ -1,5 +1,5 @@
-#!/usr/bin/env python
-__version__ = "r2025.06.25-0"
+__version__ = "r2025.07.01-0"
+
 
 import logging
 from argparse import ArgumentParser
@@ -11,6 +11,12 @@ import aiofiles
 from msgspec import UNSET, UnsetType, json
 from telethon import TelegramClient
 from telethon.errors import ChannelPrivateError
+from telethon.tl.types import (
+    ChannelForbidden,
+    ChatForbidden,
+    RestrictionReason,
+    UserEmpty,
+)
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .src import ABC, ARGSBase, arc
@@ -24,7 +30,8 @@ from .src.tg.utils import (
     resolve_entity,
 )
 from .src.types import Decodable, EntityStats, tqdm
-from .src.utils import parse_proxy
+from .src.utils import add_misc_args, encode_json_str, parse_proxy
+from .src.utils import add_opts_args as _add_opts_args
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -52,6 +59,14 @@ class Takeout(Enum):
         return self is Takeout.TRUE or self is Takeout.FALLBACK
 
 
+class Mode(Enum):
+    CLEANUP = 0
+    EXPORT = 1
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}.{self.name}"
+
+
 class Arguments(ARGSBase):
     config: Path | None
     ids: list[str | int]
@@ -60,6 +75,7 @@ class Arguments(ARGSBase):
     debug: bool
     export_path: Path
     min_ratio: float
+    mode: Mode
     proxy: str | None
     session: str
     takeout: Takeout
@@ -108,13 +124,13 @@ class TGExporter(ABC):
             self._client = await self._client.takeout().__aenter__()
         return self
 
-    async def __aexit__(self, *_exc: "Any"):
+    async def __aexit__(self, *exc: "Any"):
         if self._takeout.use:
-            await self._client.__aexit__(*_exc)
+            await self._client.__aexit__(*exc)
             self._client = self._client_orig
-        await self._client.__aexit__(*_exc)
+        await self._client.__aexit__(*exc)
         if self._args.to_db:
-            await self._archive.__aexit__(*_exc)
+            await self._archive.__aexit__(*exc)
 
     async def export_chat(
         self,
@@ -174,7 +190,51 @@ class TGExporter(ABC):
                     "skipping %s due to error", dialog.stringify(), exc_info=True
                 )
 
-    async def run(self):
+    async def cleanup_chats(self):
+        logger.info("cleaning up deleted chats")
+        dialog: Dialog
+        async for dialog in self._client.iter_dialogs():
+            try:
+                entity = await resolve_entity(self._client, dialog.input_entity)
+                restrict: list[RestrictionReason] | None = getattr(
+                    entity, "restriction_reason", None
+                )
+                if isinstance(entity, (ChannelForbidden, ChatForbidden, UserEmpty)):
+                    try:
+                        await dialog.delete()
+                        logger.info("deleted %s", encode_json_str(entity.to_dict()))
+                    except Exception:
+                        logger.warning(
+                            "failed to delete %s due to error",
+                            encode_json_str(entity.to_dict()),
+                            exc_info=True,
+                        )
+                    continue
+                if restrict:
+                    for reason in restrict:
+                        match reason:
+                            case RestrictionReason(reason="terms"):
+                                try:
+                                    await dialog.delete()
+                                    logger.info(
+                                        "deleted %s",
+                                        encode_json_str(entity.to_dict()),
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "failed to delete %s due to error",
+                                        encode_json_str(entity.to_dict()),
+                                        exc_info=True,
+                                    )
+                                continue
+            except Exception:
+                logger.warning(
+                    "failed to process %s due to error",
+                    encode_json_str(dialog.to_dict()),
+                    exc_info=True,
+                )
+
+    async def export(self):
         logger.debug("current loop %s", self._loop)
         match self._args.ids:
             case []:
@@ -225,23 +285,37 @@ async def main(_args: "Sequence[str] | None" = None):
             )
         case Never:
             argparser.error(f"invalid or incomplete session: {Never}")
-    with logging_redirect_tqdm((root,)):
+    with logging_redirect_tqdm((root,)), session:
         async with TGExporter(args, client) as tgex:
-            await tgex.run()
+            match args.mode:
+                case Mode.EXPORT:
+                    await tgex.export()
+                case Mode.CLEANUP:
+                    await tgex.cleanup_chats()
 
 
-def __main__():
-    try:
-        import uvloop as aio  # type: ignore
-    except ImportError:
-        import asyncio as aio
-
-    aio.run(main())
+def add_opts_args(parser: ArgumentParser):
+    options = _add_opts_args(parser)
+    options.add_argument(
+        "--takeout",
+        dest="takeout",
+        nargs="?",
+        const=Takeout.TRUE,
+        default=Takeout.FALSE,
+        choices=list(Takeout),
+        type=Takeout,
+    )
+    return options
 
 
 def parse_args(_args: "Sequence[str] | None" = None):
     parser = ArgumentParser(add_help=False)
-    parser.add_argument(
+    add_misc_args(parser, __version__)
+    subparser = parser.add_subparsers(required=True, metavar="mode")
+
+    sub_export = subparser.add_parser("export", help=None, add_help=False)
+    sub_export.set_defaults(mode=Mode.EXPORT)
+    sub_export.add_argument(
         "ids",
         nargs="*",
         action="store",
@@ -249,23 +323,8 @@ def parse_args(_args: "Sequence[str] | None" = None):
         help="user/chat/channel id or username",
         metavar="ID",
     )
-    misc = parser.add_argument_group("misc")
-    misc.add_argument("-h", "--help", action="help", help="print this help and exit")
-    misc.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="enable debug log",
-        dest="debug",
-    )
-    misc.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        help="print version",
-        version=f"%(prog)s {__version__}",
-    )
-    exports = parser.add_argument_group("exports")
+    add_misc_args(sub_export, __version__)
+    exports = sub_export.add_argument_group("exports")
     exports.add_argument(
         "-p",
         "--export-path",
@@ -290,53 +349,30 @@ def parse_args(_args: "Sequence[str] | None" = None):
         help="also export to archive db",
         dest="to_db",
     )
-    options = parser.add_argument_group("options")
-    options.add_argument(
-        "-a",
-        "--archive",
-        dest="archive",
-        default="sqlite::memory:",
-        metavar="{sqlite,mysql}://user:pass@host:port/schema",
-    )
-    options.add_argument(
-        "-s",
-        "--session",
-        metavar="mysql://user:pass@host:port/schema?api_id=id&api_hash=hash",
-        dest="session",
-    )
-    options.add_argument(
-        "-c",
-        "--config",
-        type=Path,
-        default=None,
-        help="load config from FILE",
-        dest="config",
-        metavar="FILE",
-    )
-    options.add_argument(
-        "--proxy",
-        default=None,
-        dest="proxy",
-        metavar="{http,socks4,socks5}://user:pass@host:port",
-    )
-    options.add_argument(
-        "--takeout",
-        dest="takeout",
-        nargs="?",
-        const=Takeout.TRUE,
-        default=Takeout.FALSE,
-        choices=list(Takeout),
-        type=Takeout,
-    )
+    add_opts_args(sub_export)
+
+    sub_cleanup = subparser.add_parser("cleanup", help=None, add_help=False)
+    sub_cleanup.set_defaults(mode=Mode.CLEANUP)
+    add_misc_args(sub_cleanup, __version__)
+    add_opts_args(sub_cleanup)
+
     args = parser.parse_args(_args, Arguments())
     if args.config:
         config = Config.decode_yaml(args.config.read_bytes())
         for sf in config.__struct_fields__:
             sv = getattr(config, sf)
-            if sv is not UNSET:
+            if sv is not UNSET and sv != parser.get_default(sf):
                 match sf:
                     case "export_path":
                         sv = Path(sv)
                 setattr(args, sf, sv)
-    args = parser.parse_args(_args, args)
     return parser, args
+
+
+def __main__():
+    try:
+        import uvloop as aio  # type: ignore
+    except ImportError:
+        import asyncio as aio
+
+    aio.run(main())

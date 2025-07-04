@@ -1,10 +1,10 @@
-class FileAlreadyExists(Exception):
+class FileAlreadyExists(ValueError):
     pass
 
 
-class MessageHasNoFile(Exception):
+class MessageHasNoFile(ValueError):
     pass
 
 
-class MessageValidationError(Exception):
+class MessageValidationError(ValueError):
     pass

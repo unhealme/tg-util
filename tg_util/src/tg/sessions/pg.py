@@ -1,12 +1,13 @@
-"""psql session for telethon
+"""pg session for telethon
 
 changes:
-- tables are not auto create
+- tables must be created manually
 - no version table
 """
 # pyright: reportIncompatibleMethodOverride=false
 
-import asyncio
+from asyncio.events import AbstractEventLoop, new_event_loop
+from asyncio.tasks import run_coroutine_threadsafe
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Thread
@@ -35,9 +36,10 @@ CURRENT_VERSION = 7
 
 class PSQLSession(MemorySession):
     _conn: "Connection[Record]"
-    _loop: asyncio.AbstractEventLoop
+    _loop: AbstractEventLoop
     _schema: str
     _thread: Thread
+    _closed: bool
 
     def __init__(
         self,
@@ -55,10 +57,11 @@ class PSQLSession(MemorySession):
             raise RuntimeError(err)
         super().__init__()
         self.save_entities = True
-        self._loop = asyncio.new_event_loop()
+        self._loop = new_event_loop()
         self._thread = Thread(target=self._start_loop)
         self._thread.start()
         self._schema = schema
+        self._closed = False
         self._conn = self._wrap_sync(
             connect(
                 user=user,
@@ -68,8 +71,6 @@ class PSQLSession(MemorySession):
                 database=schema,
             )
         )
-
-        # These values will be saved
         result = self._wrap_sync(self._conn.fetchrow("select * from sessions"))
         if result:
             (
@@ -84,6 +85,12 @@ class PSQLSession(MemorySession):
     def __repr__(self) -> str:
         return "<%s: %s>" % (self.__class__.__name__, self._schema)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: "Any"):
+        self.close()
+
     def clone(self, to_instance=None):
         cloned = super().clone(to_instance)
         cloned.save_entities = self.save_entities
@@ -92,8 +99,6 @@ class PSQLSession(MemorySession):
     def set_dc(self, dc_id, server_address, port):
         super().set_dc(dc_id, server_address, port)
         self._update_session_table()
-
-        # Fetch the auth_key corresponding to this data center
         row = self._wrap_sync(self._conn.fetchrow("select auth_key from sessions"))
         if row and row[0]:
             self._auth_key = AuthKey(data=row[0])
@@ -166,16 +171,13 @@ class PSQLSession(MemorySession):
             )
 
     def close(self):
-        """Closes the connection unless we're working in-memory"""
-        self._wrap_sync(self._conn.close())
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join()
+        if not self._closed:
+            self._wrap_sync(self._conn.close())
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join()
+            self._closed = True
 
     def process_entities(self, tlo: TLObject):
-        """
-        Processes all the found entities on the given TLObject,
-        unless .save_entities is False.
-        """
         if not self.save_entities:
             return
 
@@ -193,7 +195,7 @@ class PSQLSession(MemorySession):
             )
         )
 
-    def get_entity_rows_by_phone(self, phone: int):  # type: ignore
+    def get_entity_rows_by_phone(self, phone: int):
         return self._wrap_sync(
             self._conn.fetchrow(
                 "select id, hash from entities where phone = $1",
@@ -208,11 +210,8 @@ class PSQLSession(MemorySession):
                 username,
             )
         )
-
         if not rows:
             return None
-
-        # If there is more than one result for the same username, evict the oldest one
         if len(rows) > 1:
             rows.sort(key=lambda t: t[2] or 0)
             self._wrap_sync(
@@ -224,12 +223,12 @@ class PSQLSession(MemorySession):
         row = rows[-1]
         return row[0], row[1]
 
-    def get_entity_rows_by_name(self, name: str):  # type: ignore
+    def get_entity_rows_by_name(self, name: str):
         return self._wrap_sync(
             self._conn.fetchrow("select id, hash from entities where name = $1", name)
         )
 
-    def get_entity_rows_by_id(self, id: int, exact: bool = True):  # type: ignore
+    def get_entity_rows_by_id(self, id: int, exact: bool = True):
         q: tuple[Any, ...] = ()
         if exact:
             q = ("select id, hash from entities where id = $1", id)
@@ -252,12 +251,12 @@ class PSQLSession(MemorySession):
                 _SentFileType.from_type(cls).value,
             )
         ):
-            # Both allowed classes have (id, access_hash) as parameters
             return cls(row[0], row[1])
 
     def cache_file(self, md5_digest: bytes, file_size: int, instance: "Any"):
         if not isinstance(instance, (InputDocument, InputPhoto)):
-            raise TypeError("Cannot cache %s instance" % type(instance))
+            err = f"Cannot cache {type(instance)} instance"
+            raise TypeError(err)
         self._wrap_sync(
             self._conn.execute(
                 "insert into sent_files values ($1, $2, $3, $4, $5) "
@@ -272,7 +271,7 @@ class PSQLSession(MemorySession):
         )
 
     def _wrap_sync[T](self, coro: "Coroutine[Any, Any, T]"):
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        return run_coroutine_threadsafe(coro, self._loop).result()
 
     @contextmanager
     def _transactions(self):

@@ -1,5 +1,4 @@
 from hashlib import blake2b
-from typing import TYPE_CHECKING, Any, Literal, overload
 
 from telethon.tl.functions.upload import GetFileHashesRequest
 from telethon.tl.types import (
@@ -28,8 +27,9 @@ from telethon.utils import get_inner_text
 
 from tg_util.src.types import EntityStats, FileAttribute, FileType
 
+TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from typing import Any
 
     from telethon import TelegramClient
     from telethon.hints import Entity
@@ -42,36 +42,28 @@ ENTITIES: dict[str, "Entity"] = {}
 SENDERS: dict[int, "MTProtoSender"] = {}
 
 
-@overload
 async def resolve_entity(
-    c: "TelegramClient",
-    e: "Any",
-    with_stats: Literal[True],
-) -> tuple["Entity", EntityStats]: ...
-@overload
-async def resolve_entity(
-    c: "TelegramClient",
-    e: "Any",
+    client: "TelegramClient",
+    entity: "Any",
     with_stats: bool = False,
-) -> "Entity": ...
-async def resolve_entity(c: "TelegramClient", e: "Any", with_stats: bool = False):
-    if isinstance(e, str) and e.isdigit():
-        e = int(e, 10)
+):
+    if isinstance(entity, str) and entity.isdigit():
+        entity = int(entity, 10)
     try:
-        entity: Entity = ENTITIES[str(e)]
+        e: Entity = ENTITIES[str(entity)]
     except KeyError:
-        if isinstance(e, int):
+        if isinstance(entity, int):
             try:
-                entity = await c.get_entity(PeerChannel(e))  # type: ignore
+                e = await client.get_entity(PeerChannel(entity))  # type: ignore
             except Exception:
                 try:
-                    entity = await c.get_entity(PeerChat(e))  # type: ignore
+                    e = await client.get_entity(PeerChat(entity))  # type: ignore
                 except Exception:
-                    entity = await c.get_entity(PeerUser(e))  # type: ignore
+                    e = await client.get_entity(PeerUser(entity))  # type: ignore
         else:
-            entity = await c.get_entity(e)  # type: ignore
-        ENTITIES[str(e)] = entity  # type: ignore
-    return (entity, await get_entity_stats(c, entity)) if with_stats else entity
+            e = await client.get_entity(entity)  # type: ignore
+        ENTITIES[str(entity)] = e  # type: ignore
+    return (e, await get_entity_stats(client, e)) if with_stats else e
 
 
 async def get_file_hash(
@@ -79,7 +71,6 @@ async def get_file_hash(
     dc_id: int | None,
     location: TypeInputFileLocation,
 ):
-    """raises: LocationInvalidError"""
     if dc_id and dc_id != client.session.dc_id:  # type: ignore
         try:
             sender = SENDERS[dc_id]
@@ -94,7 +85,7 @@ async def get_file_hash(
     return file_hash.digest()
 
 
-def parse_hashtags(msg: "Message") -> list[str]:
+def parse_hashtags(msg: "Message"):
     if not msg.entities:
         return []
     s = set(
@@ -106,8 +97,7 @@ def parse_hashtags(msg: "Message") -> list[str]:
     return sorted(s, key=str.casefold)
 
 
-def parse_entity(entity: "Any") -> tuple[str, str, str, int]:
-    """return: class, title, username, id"""
+def parse_entity(entity: "Any"):
     entity_username = entity_name = ""
     match entity:
         case User(
@@ -140,7 +130,8 @@ def parse_entity(entity: "Any") -> tuple[str, str, str, int]:
             entity_id = id
             entity_name = title
         case _:
-            raise TypeError
+            err = f"unable to parse {entity}"
+            raise TypeError(err)
     return entity.__class__.__name__, entity_name, entity_username, entity_id
 
 
@@ -166,19 +157,19 @@ def get_file_attr(file: "File"):
     return FileAttribute(width, height, duration, size, ftype, file.media.id)
 
 
-async def get_entity_stats(c: "TelegramClient", e: "Entity"):
-    type, title, username, id = parse_entity(e)
+async def get_entity_stats(client: "TelegramClient", entity: "Entity"):
+    type, title, username, id = parse_entity(entity)
     media_count = getattr(
-        await c.get_messages(e, 0, filter=InputMessagesFilterPhotoVideo),
+        await client.get_messages(entity, 0, filter=InputMessagesFilterPhotoVideo),
         "total",
         0,
     )
     file_count = getattr(
-        await c.get_messages(e, 0, filter=InputMessagesFilterDocument),
+        await client.get_messages(entity, 0, filter=InputMessagesFilterDocument),
         "total",
         0,
     )
-    message_count = getattr(await c.get_messages(e, 0), "total", -1)
+    message_count = getattr(await client.get_messages(entity, 0), "total", -1)
     return EntityStats(
         type,
         title,
@@ -199,7 +190,7 @@ async def iter_messages(
     wait_time: float | None = None,
     reverse: bool = False,
     with_reply: bool = True,
-) -> "AsyncIterator[tuple[Message, int | None]]":
+):
     message: Message
     async for message in client.iter_messages(
         entity,
