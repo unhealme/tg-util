@@ -1,4 +1,4 @@
-__version__ = "r2025.07.01-0"
+__version__ = "r2025.07.18-0"
 
 
 import contextlib
@@ -17,7 +17,7 @@ from telethon import TelegramClient
 from tqdm.contrib import DummyTqdmFile
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .src import ABC, ARGSBase, arc
+from .src import ABC, ARGSBase, DefaultARG, arc
 from .src.input import InputFile
 from .src.log import setup_logging
 from .src.sheet import SheetGenerator
@@ -43,6 +43,7 @@ from .src.utils import (
     format_duration,
     parse_proxy,
     round_size,
+    unpack_default,
     wrap_async,
 )
 
@@ -72,25 +73,25 @@ class Mode(Enum):
 
 
 class Arguments(ARGSBase):
-    archive: str
-    categorize: bool
+    archive: str | DefaultARG[str]
+    categorize: bool | DefaultARG[bool]
     config: Path | None
-    download_path: Path | None
-    download_threads: int
+    download_path: Path | DefaultARG[None]
+    download_threads: int | DefaultARG[int]
     file: InputFile | None
     mode: Mode
-    proxy: str | None
-    session: str
+    proxy: str | DefaultARG[None]
+    session: str | DefaultARG[str]
     urls: list[tuple[str | int, int]]
 
     always_write_meta: bool
-    create_sheet: bool
-    debug: bool
-    overwrite: bool
-    reverse_download: bool
-    single_url: bool
-    thumbs_only: bool
-    use_takeout: bool
+    create_sheet: bool | DefaultARG[bool]
+    debug: bool | DefaultARG[bool]
+    overwrite: bool | DefaultARG[bool]
+    reverse_download: bool | DefaultARG[bool]
+    single_url: bool | DefaultARG[bool]
+    thumbs_only: bool | DefaultARG[bool]
+    use_takeout: bool | DefaultARG[bool]
 
     _ientity: str | int
     _imsg_id: list[tuple[int, int | None]]
@@ -106,7 +107,7 @@ class Config(Decodable):
     categorize: bool | UnsetType = UNSET
     create_sheet: bool | UnsetType = UNSET
     debug: bool | UnsetType = UNSET
-    download_path: str | UnsetType = UNSET
+    download_path: Path | UnsetType = UNSET
     download_threads: int | UnsetType = UNSET
     overwrite: bool | UnsetType = UNSET
     proxy: str | UnsetType = UNSET
@@ -128,6 +129,7 @@ class TGDownloader(ABC):
     _args: Arguments
     _client: TelegramClient
     _client_orig: TelegramClient
+    _dl_threads: int
     _input: InputFile
     _mode: Mode
     _sheet: SheetGenerator
@@ -145,7 +147,8 @@ class TGDownloader(ABC):
         self._mode = args.mode
         self._wait_time = None
         self._tasks = set()
-        self._archive = arc.create(urlparse(self._args.archive))
+        self._archive = arc.create(urlparse(unpack_default(self._args.archive)))
+        self._dl_threads = unpack_default(args.download_threads)
         if args.file:
             self._input = args.file
         if args.create_sheet:
@@ -154,11 +157,11 @@ class TGDownloader(ABC):
             self._wait_time = 0.0
         self._wrapper = InputMessageWrapper(
             client,
-            args.download_path or Path.cwd(),
-            args.categorize,
-            args.create_sheet,
-            args.overwrite,
-            args.thumbs_only,
+            unpack_default(args.download_path) or Path.cwd(),
+            unpack_default(args.categorize),
+            unpack_default(args.create_sheet),
+            unpack_default(args.overwrite),
+            unpack_default(args.thumbs_only),
         )
 
     async def __aenter__(self):
@@ -171,16 +174,14 @@ class TGDownloader(ABC):
             self._client = await self._client.takeout().__aenter__()
         return self
 
-    async def __aexit__(self, exc_type: type[BaseException] | None, *exc: "Any"):
-        if exc_type is not KeyboardInterrupt:
-            await self.wait_tasks()
+    async def __aexit__(self, *exc: "Any"):
         if self._args.use_takeout:
-            await self._client.__aexit__(exc_type, *exc)
+            await self._client.__aexit__(*exc)
             self._client = self._client_orig
-        await self._client.__aexit__(exc_type, *exc)
-        await self._archive.__aexit__(exc_type, *exc)
+        await self._client.__aexit__(*exc)
+        await self._archive.__aexit__(*exc)
         if self._args.create_sheet:
-            self._sheet.__exit__(exc_type, *exc)
+            self._sheet.__exit__(*exc)
 
     async def run(self):
         logger.debug("current loop %s", self._loop)
@@ -210,6 +211,7 @@ class TGDownloader(ABC):
                             else:
                                 ids = (message_id - 1, 0)
                             await self.process_ids(entity, [ids], subprog)
+        await self.wait_tasks()
 
     async def process_file(self):
         async for lnum, line in tqdm(aiter(self._input), "Overall", len(self._input)):
@@ -273,7 +275,7 @@ class TGDownloader(ABC):
                     min_id=start_id,
                     max_id=end_id,
                     wait_time=self._wait_time,
-                    reverse=self._args.reverse_download,
+                    reverse=unpack_default(self._args.reverse_download),
                 )
             async for message, reply_id in pool:
                 if reply_id is None:
@@ -390,7 +392,7 @@ class TGDownloader(ABC):
 
     async def add_task(self, task: "_CoroutineLike[DownloadResult]"):
         self._tasks.add(self._loop.create_task(task))
-        if len(self._tasks) >= self._args.download_threads:
+        if len(self._tasks) >= self._dl_threads:
             done, pending = await wait(self._tasks, return_when=FIRST_COMPLETED)
             self._tasks.difference_update(done)
             self._tasks.update(pending)
@@ -480,9 +482,9 @@ async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
     root = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((root,), debug=args.debug)
+    setup_logging((root,), debug=unpack_default(args.debug))
     logger.debug("using args: %s", args)
-    match urlparse(args.session):
+    match urlparse(unpack_default(args.session)):
         case (
             ParseResult(
                 username=str(),
@@ -492,9 +494,8 @@ async def main(_args: "Sequence[str] | None" = None):
                 query=query,
             ) as url
         ):
-            proxy = None
-            if args.proxy:
-                proxy = parse_proxy(urlparse(args.proxy))
+            if (proxy := unpack_default(args.proxy)) is not None:
+                proxy = parse_proxy(urlparse(proxy))
             qs = parse_qs(query)
             session = sessions.create(url)
             client = TelegramClient(
@@ -538,7 +539,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "-p",
         "--download-path",
         type=Path,
-        default=None,
+        default=DefaultARG(None),
         help="(default: current directory)",
         metavar="PATH",
         dest="download_path",
@@ -547,7 +548,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "-t",
         "--download-threads",
         type=lambda i: int(i, 10),
-        default=8,
+        default=DefaultARG(8),
         help="(default: %(default)s)",
         metavar="NUM",
         dest="download_threads",
@@ -555,35 +556,35 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "--categorize",
         action=BooleanOptionalAction,
-        default=True,
+        default=DefaultARG(value=True),
         help="categorize downloads by chat username/id (default: %(default)s)",
         dest="categorize",
     )
     downloads.add_argument(
         "--overwrite",
         action=BooleanOptionalAction,
-        default=True,
+        default=DefaultARG(value=True),
         help="overwrite downloaded files (default: %(default)s)",
         dest="overwrite",
     )
     downloads.add_argument(
         "--reverse-download",
         action=BooleanOptionalAction,
-        default=False,
+        default=DefaultARG(value=False),
         help="download URL(s) in ascending order (default: %(default)s)",
         dest="reverse_download",
     )
     downloads.add_argument(
         "--single-url",
         action=BooleanOptionalAction,
-        default=False,
+        default=DefaultARG(value=False),
         help="only fetch single message per URL(s) (default: %(default)s)",
         dest="single_url",
     )
     downloads.add_argument(
         "--thumbs-only",
         action=BooleanOptionalAction,
-        default=False,
+        default=DefaultARG(value=False),
         help="download only thumbnails on videos (default: %(default)s)",
         dest="thumbs_only",
     )
@@ -607,7 +608,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
     options.add_argument(
         "--takeout",
         action=BooleanOptionalAction,
-        default=False,
+        default=DefaultARG(value=False),
         dest="use_takeout",
         help="use takeout session (default: %(default)s)",
     )
@@ -615,7 +616,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
     post.add_argument(
         "--create-sheet",
         action=BooleanOptionalAction,
-        default=False,
+        default=DefaultARG(value=False),
         help="create video contact sheets on videos (default: %(default)s)",
         dest="create_sheet",
     )
@@ -630,10 +631,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         config = Config.decode_yaml(args.config.read_bytes())
         for sf in config.__struct_fields__:
             sv = getattr(config, sf)
-            if sv is not UNSET and sv != parser.get_default(sf):
-                match sf:
-                    case "download_path":
-                        sv = Path(sv)
+            if sv is not UNSET and isinstance(getattr(args, sf), DefaultARG):
                 setattr(args, sf, sv)
     if args.mode is Mode.Unset:
         if args.file:

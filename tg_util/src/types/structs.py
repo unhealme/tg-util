@@ -1,8 +1,13 @@
+from pathlib import Path
 from typing import ClassVar, Self
 
 from msgspec import Struct, json, yaml
 
 from .enums import FileType
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any
 
 
 class Decodable(Struct):
@@ -13,12 +18,12 @@ class Decodable(Struct):
         try:
             return cls.__jdec__.decode(buf)
         except AttributeError:
-            cls.__jdec__ = json.Decoder(cls)
+            cls.__jdec__ = json.Decoder(cls, dec_hook=dec_hook)
             return cls.decode_json(buf)
 
     @classmethod
     def decode_yaml(cls, buf: bytes, /) -> Self:
-        return yaml.decode(buf, type=cls)
+        return yaml.decode(buf, type=cls, dec_hook=dec_hook)
 
 
 class TLSchemaBase(Struct, tag=True, tag_field="_"):
@@ -46,3 +51,10 @@ class EntityStats(Struct):
     @property
     def ratio(self):
         return (self.medias + self.files) / self.messages
+
+
+def dec_hook(type: type, obj: "Any"):
+    if type is Path:
+        return Path(obj)
+    err = f"type {type} is not implemented"
+    raise NotImplementedError(err)

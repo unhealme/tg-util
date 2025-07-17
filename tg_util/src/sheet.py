@@ -1,6 +1,5 @@
 import logging
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from pathlib import Path
@@ -123,7 +122,7 @@ def generate_sheet(file: Path):
     logger.debug("%s: generating sheet", file.name)
     p = subprocess.run(
         (
-            "vcsi.py",
+            "vcsi",
             "-t",
             *("-o", out_path / (file.name + ".webp")),
             *("-w", "4000"),
@@ -135,7 +134,6 @@ def generate_sheet(file: Path):
             "--",
             file,
         ),
-        shell=sys.platform == "win32",
         stderr=subprocess.PIPE,
         stdout=subprocess.PIPE,
     )

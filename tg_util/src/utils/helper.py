@@ -3,6 +3,8 @@ from pathlib import Path
 
 from msgspec import json
 
+from tg_util.src import DefaultARG
+
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from argparse import ArgumentParser
@@ -58,6 +60,7 @@ def add_misc_args(parser: "ArgumentParser", version: str):
         "-v",
         "--verbose",
         action="store_true",
+        default=DefaultARG(value=False),
         help="enable debug log",
         dest="debug",
     )
@@ -77,14 +80,15 @@ def add_opts_args(parser: "ArgumentParser"):
         "-a",
         "--archive",
         dest="archive",
-        default="sqlite::memory:",
-        metavar="{sqlite,mysql}://user:pass@host:port/schema",
+        default=DefaultARG("sqlite::memory:"),
+        metavar="scheme:[//user:pass@host:port/]schema",
     )
     options.add_argument(
         "-s",
         "--session",
-        metavar="mysql://user:pass@host:port/schema?api_id=id&api_hash=hash",
         dest="session",
+        default=DefaultARG("sqlite:telethon.session"),
+        metavar="scheme:[//user:pass@host:port/]schema[?api_id=id&api_hash=hash]",
     )
     options.add_argument(
         "-c",
@@ -97,8 +101,14 @@ def add_opts_args(parser: "ArgumentParser"):
     )
     options.add_argument(
         "--proxy",
-        default=None,
+        default=DefaultARG(None),
         dest="proxy",
         metavar="{http,socks4,socks5}://user:pass@host:port",
     )
     return options
+
+
+def unpack_default[RT, DT](arg: DefaultARG[DT] | RT) -> DT | RT:
+    if isinstance(arg, DefaultARG):
+        return arg.value
+    return arg

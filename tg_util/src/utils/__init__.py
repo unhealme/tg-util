@@ -6,6 +6,7 @@ __all__ = (
     "format_duration",
     "parse_proxy",
     "round_size",
+    "unpack_default",
     "wrap_async",
 )
 
@@ -18,4 +19,5 @@ from .helper import (
     format_duration,
     parse_proxy,
     round_size,
+    unpack_default,
 )

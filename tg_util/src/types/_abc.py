@@ -60,3 +60,16 @@ class ARGSBase(ABC):
     def __repr__(self) -> str:
         attr = ", ".join(["%s=%r" % f for f in self.__iter_fields__()])
         return f"{self.__class__.__name__}({attr})"
+
+
+class DefaultARG[T](ABC):
+    value: T
+
+    def __init__(self, value: T):
+        self.value = value
+
+    def __bool__(self):
+        return bool(self.value)
+
+    def __repr__(self):
+        return f"<Default: {self.value!r}>"

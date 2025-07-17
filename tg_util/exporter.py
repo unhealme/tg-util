@@ -1,4 +1,4 @@
-__version__ = "r2025.07.01-0"
+__version__ = "r2025.07.18-0"
 
 
 import logging
@@ -19,7 +19,7 @@ from telethon.tl.types import (
 )
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .src import ABC, ARGSBase, arc
+from .src import ABC, ARGSBase, DefaultARG, arc
 from .src.log import setup_logging
 from .src.tg import sessions
 from .src.tg.messages.export import MessageExport
@@ -30,7 +30,7 @@ from .src.tg.utils import (
     resolve_entity,
 )
 from .src.types import Decodable, EntityStats, tqdm
-from .src.utils import add_misc_args, encode_json_str, parse_proxy
+from .src.utils import add_misc_args, encode_json_str, parse_proxy, unpack_default
 from .src.utils import add_opts_args as _add_opts_args
 
 TYPE_CHECKING = False
@@ -71,21 +71,21 @@ class Arguments(ARGSBase):
     config: Path | None
     ids: list[str | int]
 
-    archive: str
-    debug: bool
-    export_path: Path
-    min_ratio: float
+    archive: str | DefaultARG[str]
+    debug: bool | DefaultARG[bool]
+    export_path: Path | DefaultARG[None]
+    min_ratio: float | DefaultARG[float]
     mode: Mode
-    proxy: str | None
-    session: str
-    takeout: Takeout
-    to_db: bool
+    proxy: str | DefaultARG[None]
+    session: str | DefaultARG[str]
+    takeout: Takeout | DefaultARG[Takeout]
+    to_db: bool | DefaultARG[bool]
 
 
 class Config(Decodable):
     archive: str | UnsetType = UNSET
     debug: bool | UnsetType = UNSET
-    export_path: str | UnsetType = UNSET
+    export_path: Path | UnsetType = UNSET
     min_ratio: float | UnsetType = UNSET
     proxy: str | UnsetType = UNSET
     session: str | UnsetType = UNSET
@@ -109,11 +109,11 @@ class TGExporter(ABC):
     def __init__(self, args: Arguments, client: TelegramClient) -> None:
         self._args = args
         self._client = client
-        self._out = args.export_path
-        self._takeout = args.takeout
-        self._wait_time = 0.0 if args.takeout.use else None
+        self._out = unpack_default(args.export_path) or Path.cwd()
+        self._takeout = unpack_default(args.takeout)
+        self._wait_time = 0.0 if unpack_default(args.takeout).use else None
         if self._args.to_db:
-            self._archive = arc.create(urlparse(self._args.archive))
+            self._archive = arc.create(urlparse(unpack_default(self._args.archive)))
 
     async def __aenter__(self):
         if self._args.to_db:
@@ -238,7 +238,7 @@ class TGExporter(ABC):
         logger.debug("current loop %s", self._loop)
         match self._args.ids:
             case []:
-                await self.export_dialogs(self._args.min_ratio)
+                await self.export_dialogs(unpack_default(self._args.min_ratio))
             case ids:
                 for i in ids:
                     try:
@@ -258,9 +258,9 @@ async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
     root = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((root,), debug=args.debug)
+    setup_logging((root,), debug=unpack_default(args.debug))
     logger.debug("using args: %s", args)
-    match urlparse(args.session):
+    match urlparse(unpack_default(args.session)):
         case (
             ParseResult(
                 username=str(),
@@ -270,9 +270,8 @@ async def main(_args: "Sequence[str] | None" = None):
                 query=query,
             ) as url
         ):
-            proxy = None
-            if args.proxy:
-                proxy = parse_proxy(urlparse(args.proxy))
+            if (proxy := unpack_default(args.proxy)) is not None:
+                proxy = parse_proxy(urlparse(proxy))
             qs = parse_qs(query)
             session = sessions.create(url)
             client = TelegramClient(
@@ -301,7 +300,7 @@ def add_opts_args(parser: ArgumentParser):
         dest="takeout",
         nargs="?",
         const=Takeout.TRUE,
-        default=Takeout.FALSE,
+        default=DefaultARG(Takeout.FALSE),
         choices=list(Takeout),
         type=Takeout,
     )
@@ -329,7 +328,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "-p",
         "--export-path",
         type=Path,
-        default=None,
+        default=DefaultARG(None),
         help="(default to current directory)",
         metavar="PATH",
         dest="export_path",
@@ -338,7 +337,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "--mr",
         "--min-ratio",
         type=float,
-        default=0.0,
+        default=DefaultARG(0.0),
         help="minimum media to message ratio for export",
         metavar="NUM",
         dest="min_ratio",
@@ -346,6 +345,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
     exports.add_argument(
         "--to-db",
         action="store_true",
+        default=DefaultARG(value=False),
         help="also export to archive db",
         dest="to_db",
     )
@@ -361,10 +361,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         config = Config.decode_yaml(args.config.read_bytes())
         for sf in config.__struct_fields__:
             sv = getattr(config, sf)
-            if sv is not UNSET and sv != parser.get_default(sf):
-                match sf:
-                    case "export_path":
-                        sv = Path(sv)
+            if sv is not UNSET and isinstance(getattr(args, sf), DefaultARG):
                 setattr(args, sf, sv)
     return parser, args
 
