@@ -1,4 +1,4 @@
-__version__ = "r2025.07.18-0"
+__version__ = "r2025.10.15-2"
 
 
 import logging
@@ -11,6 +11,7 @@ import aiofiles
 from msgspec import UNSET, UnsetType, json
 from telethon import TelegramClient
 from telethon.errors import ChannelPrivateError
+from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from telethon.tl.types import (
     ChannelForbidden,
     ChatForbidden,
@@ -69,7 +70,7 @@ class Mode(Enum):
 
 class Arguments(ARGSBase):
     config: Path | None
-    ids: list[str | int]
+    ids: list[tuple[str | int, int]]
 
     archive: str | DefaultARG[str]
     debug: bool | DefaultARG[bool]
@@ -102,6 +103,8 @@ class TGExporter(ABC):
     _takeout: Takeout
     _wait_time: float | None
 
+    _export_ready: bool
+
     @property
     def _loop(self):
         return self._client.loop
@@ -109,15 +112,20 @@ class TGExporter(ABC):
     def __init__(self, args: Arguments, client: TelegramClient) -> None:
         self._args = args
         self._client = client
-        self._out = unpack_default(args.export_path) or Path.cwd()
+        self._export_ready = False
         self._takeout = unpack_default(args.takeout)
         self._wait_time = 0.0 if unpack_default(args.takeout).use else None
-        if self._args.to_db:
-            self._archive = arc.create(urlparse(unpack_default(self._args.archive)))
+
+    async def _init_export(self):
+        if not self._export_ready:
+            self._out = unpack_default(self._args.export_path) or Path.cwd()
+            if self._args.to_db:
+                self._archive = await arc.create(
+                    urlparse(unpack_default(self._args.archive))
+                ).__aenter__()
+            self._export_ready = True
 
     async def __aenter__(self):
-        if self._args.to_db:
-            self._archive = await self._archive.__aenter__()
         self._client = await self._client.__aenter__()
         if self._takeout.use:
             self._client_orig = self._client
@@ -129,66 +137,8 @@ class TGExporter(ABC):
             await self._client.__aexit__(*exc)
             self._client = self._client_orig
         await self._client.__aexit__(*exc)
-        if self._args.to_db:
+        if hasattr(self, "_archive"):
             await self._archive.__aexit__(*exc)
-
-    async def export_chat(
-        self,
-        c: TelegramClient,
-        e: "Entity",
-        fn: str,
-        prog: tqdm["Any"],
-        wait_time: float | None,
-    ):
-        total = 0
-        async with aiofiles.open(self._out / f"{fn}.json", "wb", 0) as out:
-            async for message, reply_id in iter_messages(c, e, wait_time=wait_time):
-                total += 1
-                if reply_id is None:
-                    prog.update(1)
-                message_d = message.to_dict()
-                message_d["_hashtags"] = parse_hashtags(message)
-                message_d["peer_id"]["_entity"] = e.to_dict()
-                await out.write(json.encode(message_d) + b"\n")
-                if self._args.to_db:
-                    await self._archive.export(MessageExport.from_message(message))
-        return total
-
-    async def export_with_fallback(self, e: "Entity", s: EntityStats):
-        fn = f"@{s.username}" if s.username else str(s.id)
-        with tqdm(desc=str(s), total=s.messages) as prog:
-            if (
-                await self.export_chat(self._client, e, fn, prog, self._wait_time) == 0
-                and self._takeout is Takeout.FALLBACK
-            ):
-                logger.debug(
-                    "got 0 messages for %s using takeout session, "
-                    "falling back to normal session",
-                    s,
-                )
-                await self.export_chat(self._client_orig, e, fn, prog, None)
-
-    async def export_dialogs(self, mr: float):
-        td = getattr(await self._client.get_dialogs(0), "total", 0)
-        dialog: Dialog
-        async for dialog in tqdm(self._client.iter_dialogs(), "Dialogs", td):
-            try:
-                entity, stats = await resolve_entity(
-                    self._client, dialog.input_entity, with_stats=True
-                )
-                if stats.messages == 0 and self._takeout is Takeout.FALLBACK:
-                    stats = await get_entity_stats(self._client_orig, entity)
-                if stats.ratio > mr:
-                    logger.debug("processing %s with ratio: %.3f", stats, stats.ratio)
-                    await self.export_with_fallback(entity, stats)
-                else:
-                    logger.debug("skipping %s with ratio: %.3f", stats, stats.ratio)
-            except ChannelPrivateError:
-                continue
-            except Exception:
-                logger.warning(
-                    "skipping %s due to error", dialog.stringify(), exc_info=True
-                )
 
     async def cleanup_chats(self):
         logger.info("cleaning up deleted chats")
@@ -234,7 +184,76 @@ class TGExporter(ABC):
                     exc_info=True,
                 )
 
+    async def export_chat(
+        self,
+        c: TelegramClient,
+        e: "Entity",
+        m: int,
+        fn: str,
+        prog: tqdm["Any"],
+        wait_time: float | None,
+    ):
+        await self._init_export()
+        total = 0
+        async with aiofiles.open(self._out / f"{fn}.json", "wb", 0) as out:
+            async for message, reply_id in iter_messages(
+                c,
+                e,
+                min_id=m,
+                wait_time=wait_time,
+            ):
+                total += 1
+                if reply_id is None:
+                    prog.update(1)
+                message_d = message.to_dict()
+                message_d["_hashtags"] = parse_hashtags(message)
+                message_d["peer_id"]["_entity"] = e.to_dict()
+                await out.write(json.encode(message_d) + b"\n")
+                if self._args.to_db:
+                    await self._archive.export(MessageExport.from_message(message))
+        return total
+
+    async def export_with_fallback(self, e: "Entity", m: int, s: EntityStats):
+        await self._init_export()
+        fn = f"@{s.username}" if s.username else str(s.id)
+        with tqdm(desc=str(s), initial=m, total=s.messages) as prog:
+            if (
+                await self.export_chat(self._client, e, m, fn, prog, self._wait_time)
+                == 0
+                and self._takeout is Takeout.FALLBACK
+            ):
+                logger.debug(
+                    "got 0 messages for %s using takeout session, "
+                    "falling back to normal session",
+                    s,
+                )
+                await self.export_chat(self._client_orig, e, m, fn, prog, None)
+
+    async def export_dialogs(self, mr: float):
+        await self._init_export()
+        td = getattr(await self._client.get_dialogs(0), "total", 0)
+        dialog: Dialog
+        async for dialog in tqdm(self._client.iter_dialogs(), "Dialogs", td):
+            try:
+                entity, stats = await resolve_entity(
+                    self._client, dialog.input_entity, with_stats=True
+                )
+                if stats.messages == 0 and self._takeout is Takeout.FALLBACK:
+                    stats = await get_entity_stats(self._client_orig, entity)
+                if stats.ratio > mr:
+                    logger.debug("processing %s with ratio: %.3f", stats, stats.ratio)
+                    await self.export_with_fallback(entity, 0, stats)
+                else:
+                    logger.debug("skipping %s with ratio: %.3f", stats, stats.ratio)
+            except ChannelPrivateError:
+                continue
+            except Exception:
+                logger.warning(
+                    "skipping %s due to error", dialog.stringify(), exc_info=True
+                )
+
     async def export(self):
+        await self._init_export()
         logger.debug("current loop %s", self._loop)
         match self._args.ids:
             case []:
@@ -243,11 +262,11 @@ class TGExporter(ABC):
                 for i in ids:
                     try:
                         entity, stats = await resolve_entity(
-                            self._client, i, with_stats=True
+                            self._client, i[0], with_stats=True
                         )
                         if stats.messages == 0 and self._takeout is Takeout.FALLBACK:
                             stats = await get_entity_stats(self._client_orig, entity)
-                        await self.export_with_fallback(entity, stats)
+                        await self.export_with_fallback(entity, i[1], stats)
                     except Exception:
                         logger.warning(
                             "skipping input: %r due to error", i, exc_info=True
@@ -256,9 +275,9 @@ class TGExporter(ABC):
 
 async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
-    root = logging.getLogger(__package__)
+    pkg = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((root,), debug=unpack_default(args.debug))
+    setup_logging((pkg,), debug=unpack_default(args.debug))
     logger.debug("using args: %s", args)
     match urlparse(unpack_default(args.session)):
         case (
@@ -278,13 +297,14 @@ async def main(_args: "Sequence[str] | None" = None):
                 session,
                 int(qs["api_id"][0], 10),
                 qs["api_hash"][0],
+                connection=ConnectionTcpAbridged,
                 proxy=proxy,  # type: ignore
                 catch_up=False,
                 receive_updates=False,
             )
         case Never:
             argparser.error(f"invalid or incomplete session: {Never}")
-    with logging_redirect_tqdm((root,)), session:
+    with logging_redirect_tqdm((pkg,)), session:
         async with TGExporter(args, client) as tgex:
             match args.mode:
                 case Mode.EXPORT:
@@ -307,6 +327,14 @@ def add_opts_args(parser: ArgumentParser):
     return options
 
 
+def parse_ids(i: str) -> tuple[str | int, int]:
+    e, _, m = i.partition("/")
+    pe = int(e, 10) if e.isdigit() else e
+    if m:
+        return pe, int(m, 10) - 1
+    return pe, 0
+
+
 def parse_args(_args: "Sequence[str] | None" = None):
     parser = ArgumentParser(add_help=False)
     add_misc_args(parser, __version__)
@@ -318,7 +346,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "ids",
         nargs="*",
         action="store",
-        type=lambda s: int(s, 10) if s.isdigit() else s,
+        type=parse_ids,
         help="user/chat/channel id or username",
         metavar="ID",
     )
@@ -359,10 +387,9 @@ def parse_args(_args: "Sequence[str] | None" = None):
     args = parser.parse_args(_args, Arguments())
     if args.config:
         config = Config.decode_yaml(args.config.read_bytes())
-        for sf in config.__struct_fields__:
-            sv = getattr(config, sf)
-            if sv is not UNSET and isinstance(getattr(args, sf), DefaultARG):
-                setattr(args, sf, sv)
+        for f, v in args.__iter_fields__():
+            if isinstance(v, DefaultARG) and (nv := getattr(config, f)) is not UNSET:
+                setattr(args, f, nv)
     return parser, args
 
 

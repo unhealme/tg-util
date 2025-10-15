@@ -1,4 +1,4 @@
-__version__ = "r2025.07.18-0"
+__version__ = "r2025.10.15-0"
 
 
 import contextlib
@@ -14,6 +14,7 @@ from urllib.parse import ParseResult, parse_qs, urlparse
 from msgspec import UNSET, Struct, UnsetType
 from PIL import Image, ImageDraw
 from telethon import TelegramClient
+from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from tqdm.contrib import DummyTqdmFile
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -480,9 +481,9 @@ async def open_image(fp: Path):
 
 async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
-    root = logging.getLogger(__package__)
+    pkg = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((root,), debug=unpack_default(args.debug))
+    setup_logging((pkg,), debug=unpack_default(args.debug))
     logger.debug("using args: %s", args)
     match urlparse(unpack_default(args.session)):
         case (
@@ -502,13 +503,14 @@ async def main(_args: "Sequence[str] | None" = None):
                 session,
                 int(qs["api_id"][0], 10),
                 qs["api_hash"][0],
+                connection=ConnectionTcpAbridged,
                 proxy=proxy,  # type: ignore
                 catch_up=False,
                 receive_updates=False,
             )
         case Never:
             argparser.error(f"invalid or incomplete session: {Never}")
-    with logging_redirect_tqdm((root,)), session:
+    with logging_redirect_tqdm((pkg,)), session:
         async with TGDownloader(args, client) as tgdl:
             await tgdl.run()
 
@@ -629,10 +631,9 @@ def parse_args(_args: "Sequence[str] | None" = None):
     args = parser.parse_args(_args, Arguments())
     if args.config:
         config = Config.decode_yaml(args.config.read_bytes())
-        for sf in config.__struct_fields__:
-            sv = getattr(config, sf)
-            if sv is not UNSET and isinstance(getattr(args, sf), DefaultARG):
-                setattr(args, sf, sv)
+        for f, v in args.__iter_fields__():
+            if isinstance(v, DefaultARG) and (nv := getattr(config, f)) is not UNSET:
+                setattr(args, f, nv)
     if args.mode is Mode.Unset:
         if args.file:
             args.mode = Mode.File
