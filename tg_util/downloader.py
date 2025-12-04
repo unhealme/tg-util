@@ -1,4 +1,4 @@
-__version__ = "r2025.10.15-0"
+__version__ = "r2025.10.25-0"
 
 
 import contextlib
@@ -253,7 +253,6 @@ class TGDownloader(ABC):
         logger.debug("processing entity: %s", {raw_entity: str(entity)})
         prog.set_description(str(raw_entity))
         prog.reset(0)
-        prog.update
         for start_id, end_id in ids:
             logger.debug("processing start: %s, end: %s", start_id, end_id)
             if end_id is None:

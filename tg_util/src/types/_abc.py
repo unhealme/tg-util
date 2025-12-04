@@ -5,6 +5,7 @@ __all__ = (
     "abstractmethod",
 )
 
+import sys
 from abc import ABCMeta as _ABCMeta
 from abc import abstractmethod
 from itertools import chain
@@ -30,9 +31,15 @@ class ABCMeta(_ABCMeta):
             err = "__slots__ should not be defined"
             raise TypeError(err)
 
-        slots = ()
-        if "__annotations__" in namespace:
-            slots = tuple(x for x in namespace["__annotations__"] if x not in namespace)
+        if sys.version_info >= (3, 14):
+            from annotationlib import Format
+
+            annotations = {}
+            if callable(annotate := namespace.get("__annotate_func__", None)):
+                annotations = annotate(Format.VALUE)
+        else:
+            annotations = namespace.get("__annotations__", {})
+        slots = tuple(x for x in annotations if x not in namespace)
         namespace["__slots__"] = slots
 
         fields: list[str] = [
