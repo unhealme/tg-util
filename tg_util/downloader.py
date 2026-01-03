@@ -1,4 +1,4 @@
-__version__ = "r2025.10.25-0"
+__version__ = "r2026.01.03-1"
 
 
 import contextlib
@@ -11,14 +11,15 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import ParseResult, parse_qs, urlparse
 
-from msgspec import UNSET, Struct, UnsetType
+from msgspec import UNSET, Struct
 from PIL import Image, ImageDraw
 from telethon import TelegramClient
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from tqdm.contrib import DummyTqdmFile
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .src import ABC, ARGSBase, DefaultARG, arc
+from .src import ABC, ARGSBase, arc
+from .src.config import Config, Takeout
 from .src.input import InputFile
 from .src.log import setup_logging
 from .src.sheet import SheetGenerator
@@ -31,7 +32,7 @@ from .src.tg.utils import (
     resolve_entity,
 )
 from .src.types import (
-    Decodable,
+    ARGDefault,
     FileAlreadyExists,
     FileType,
     MessageHasNoFile,
@@ -74,25 +75,26 @@ class Mode(Enum):
 
 
 class Arguments(ARGSBase):
-    archive: str | DefaultARG[str]
-    categorize: bool | DefaultARG[bool]
-    config: Path | None
-    download_path: Path | DefaultARG[None]
-    download_threads: int | DefaultARG[int]
-    file: InputFile | None
-    mode: Mode
-    proxy: str | DefaultARG[None]
-    session: str | DefaultARG[str]
-    urls: list[tuple[str | int, int]]
+    archive: str
+    categorize: bool
+    create_sheet: bool
+    debug: bool
+    download_path: str | None
+    download_threads: int
+    ipv6: bool
+    overwrite: bool
+    reverse_download: bool
+    single_url: bool
+    takeout: Takeout
+    thumbs_only: bool
 
     always_write_meta: bool
-    create_sheet: bool | DefaultARG[bool]
-    debug: bool | DefaultARG[bool]
-    overwrite: bool | DefaultARG[bool]
-    reverse_download: bool | DefaultARG[bool]
-    single_url: bool | DefaultARG[bool]
-    thumbs_only: bool | DefaultARG[bool]
-    use_takeout: bool | DefaultARG[bool]
+    config: str | None
+    file: InputFile | None
+    mode: Mode
+    proxy: str | None
+    session: str
+    urls: list[tuple[str | int, int]]
 
     _ientity: str | int
     _imsg_id: list[tuple[int, int | None]]
@@ -101,22 +103,6 @@ class Arguments(ARGSBase):
         self.mode = Mode.Unset
         self._ientity = ""
         self._imsg_id = []
-
-
-class Config(Decodable):
-    archive: str | UnsetType = UNSET
-    categorize: bool | UnsetType = UNSET
-    create_sheet: bool | UnsetType = UNSET
-    debug: bool | UnsetType = UNSET
-    download_path: Path | UnsetType = UNSET
-    download_threads: int | UnsetType = UNSET
-    overwrite: bool | UnsetType = UNSET
-    proxy: str | UnsetType = UNSET
-    reverse_download: bool | UnsetType = UNSET
-    session: str | UnsetType = UNSET
-    single_url: bool | UnsetType = UNSET
-    thumbs_only: bool | UnsetType = UNSET
-    use_takeout: bool | UnsetType = UNSET
 
 
 class DownloadResult(Struct, array_like=True):
@@ -148,21 +134,21 @@ class TGDownloader(ABC):
         self._mode = args.mode
         self._wait_time = None
         self._tasks = set()
-        self._archive = arc.create(urlparse(unpack_default(self._args.archive)))
-        self._dl_threads = unpack_default(args.download_threads)
+        self._archive = arc.create(urlparse(self._args.archive))
+        self._dl_threads = args.download_threads
         if args.file:
             self._input = args.file
         if args.create_sheet:
             self._sheet = SheetGenerator()
-        if self._args.use_takeout:
+        if self._args.takeout:
             self._wait_time = 0.0
         self._wrapper = InputMessageWrapper(
             client,
-            unpack_default(args.download_path) or Path.cwd(),
-            unpack_default(args.categorize),
-            unpack_default(args.create_sheet),
-            unpack_default(args.overwrite),
-            unpack_default(args.thumbs_only),
+            Path(args.download_path or Path.cwd()),
+            args.categorize,
+            args.create_sheet,
+            args.overwrite,
+            args.thumbs_only,
         )
 
     async def __aenter__(self):
@@ -170,13 +156,13 @@ class TGDownloader(ABC):
         if self._args.create_sheet:
             self._sheet = self._sheet.__enter__()
         self._client = await self._client.__aenter__()
-        if self._args.use_takeout:
+        if self._args.takeout:
             self._client_orig = self._client
             self._client = await self._client.takeout().__aenter__()
         return self
 
     async def __aexit__(self, *exc: "Any"):
-        if self._args.use_takeout:
+        if self._args.takeout:
             await self._client.__aexit__(*exc)
             self._client = self._client_orig
         await self._client.__aexit__(*exc)
@@ -275,7 +261,7 @@ class TGDownloader(ABC):
                     min_id=start_id,
                     max_id=end_id,
                     wait_time=self._wait_time,
-                    reverse=unpack_default(self._args.reverse_download),
+                    reverse=self._args.reverse_download,
                 )
             async for message, reply_id in pool:
                 if reply_id is None:
@@ -482,9 +468,9 @@ async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
     pkg = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((pkg,), debug=unpack_default(args.debug))
+    setup_logging((pkg,), debug=args.debug)
     logger.debug("using args: %s", args)
-    match urlparse(unpack_default(args.session)):
+    match urlparse(args.session):
         case (
             ParseResult(
                 username=str(),
@@ -494,15 +480,16 @@ async def main(_args: "Sequence[str] | None" = None):
                 query=query,
             ) as url
         ):
-            if (proxy := unpack_default(args.proxy)) is not None:
+            if (proxy := args.proxy) is not None:
                 proxy = parse_proxy(urlparse(proxy))
             qs = parse_qs(query)
-            session = sessions.create(url)
+            session = sessions.create(url, args.ipv6)
             client = TelegramClient(
                 session,
                 int(qs["api_id"][0], 10),
                 qs["api_hash"][0],
                 connection=ConnectionTcpAbridged,
+                use_ipv6=args.ipv6,
                 proxy=proxy,  # type: ignore
                 catch_up=False,
                 receive_updates=False,
@@ -539,8 +526,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "-p",
         "--download-path",
-        type=Path,
-        default=DefaultARG(None),
         help="(default: current directory)",
         metavar="PATH",
         dest="download_path",
@@ -549,7 +534,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "-t",
         "--download-threads",
         type=lambda i: int(i, 10),
-        default=DefaultARG(8),
+        default=ARGDefault(8),
         help="(default: %(default)s)",
         metavar="NUM",
         dest="download_threads",
@@ -557,35 +542,35 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "--categorize",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=True),
+        default=ARGDefault(value=True),
         help="categorize downloads by chat username/id (default: %(default)s)",
         dest="categorize",
     )
     downloads.add_argument(
         "--overwrite",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=True),
+        default=ARGDefault(value=True),
         help="overwrite downloaded files (default: %(default)s)",
         dest="overwrite",
     )
     downloads.add_argument(
         "--reverse-download",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="download URL(s) in ascending order (default: %(default)s)",
         dest="reverse_download",
     )
     downloads.add_argument(
         "--single-url",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="only fetch single message per URL(s) (default: %(default)s)",
         dest="single_url",
     )
     downloads.add_argument(
         "--thumbs-only",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="download only thumbnails on videos (default: %(default)s)",
         dest="thumbs_only",
     )
@@ -605,19 +590,12 @@ def parse_args(_args: "Sequence[str] | None" = None):
         dest="file",
         metavar="FILE",
     )
-    options = add_opts_args(parser)
-    options.add_argument(
-        "--takeout",
-        action=BooleanOptionalAction,
-        default=DefaultARG(value=False),
-        dest="use_takeout",
-        help="use takeout session (default: %(default)s)",
-    )
+    add_opts_args(parser)
     post = parser.add_argument_group("post-dl")
     post.add_argument(
         "--create-sheet",
         action=BooleanOptionalAction,
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="create video contact sheets on videos (default: %(default)s)",
         dest="create_sheet",
     )
@@ -627,12 +605,16 @@ def parse_args(_args: "Sequence[str] | None" = None):
         help="always write meta even if download fails",
         dest="always_write_meta",
     )
+
     args = parser.parse_args(_args, Arguments())
     if args.config:
-        config = Config.decode_yaml(args.config.read_bytes())
+        config = Config.from_path(args.config, "yaml")
         for f, v in args.__iter_fields__():
-            if isinstance(v, DefaultARG) and (nv := getattr(config, f)) is not UNSET:
-                setattr(args, f, nv)
+            if isinstance(v, ARGDefault):
+                if (nv := getattr(config, f)) is not UNSET:
+                    setattr(args, f, nv)
+                else:
+                    setattr(args, f, unpack_default(v))
     if args.mode is Mode.Unset:
         if args.file:
             args.mode = Mode.File

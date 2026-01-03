@@ -1,9 +1,9 @@
 __all__ = (
     "ABC",
     "ABCMeta",
+    "ARGDefault",
     "ARGSBase",
     "Decodable",
-    "DefaultARG",
     "EntityStats",
     "FileAlreadyExists",
     "FileAttribute",
@@ -15,7 +15,8 @@ __all__ = (
     "tqdm",
 )
 
-from ._abc import ABC, ABCMeta, ARGSBase, DefaultARG, abstractmethod
+from ._abc import ABC, ABCMeta, abstractmethod
+from .args import ARGDefault, ARGSBase
 from .enums import FileType
 from .errors import FileAlreadyExists, MessageHasNoFile, MessageValidationError
 from .structs import Decodable, EntityStats, FileAttribute, TLSchemaBase

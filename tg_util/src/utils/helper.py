@@ -1,9 +1,10 @@
+from argparse import BooleanOptionalAction
 from datetime import timedelta
-from pathlib import Path
 
 from msgspec import json
 
-from tg_util.src import DefaultARG
+from tg_util.src.config import Takeout
+from tg_util.src.types import ARGDefault
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ def add_misc_args(parser: "ArgumentParser", version: str):
         "-v",
         "--verbose",
         action="store_true",
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="enable debug log",
         dest="debug",
     )
@@ -80,35 +81,49 @@ def add_opts_args(parser: "ArgumentParser"):
         "-a",
         "--archive",
         dest="archive",
-        default=DefaultARG("sqlite::memory:"),
+        default=ARGDefault("sqlite::memory:"),
         metavar="scheme:[//user:pass@host:port/]schema",
     )
     options.add_argument(
         "-s",
         "--session",
         dest="session",
-        default=DefaultARG("sqlite:telethon.session"),
+        default=ARGDefault("sqlite:telethon.session"),
         metavar="scheme:[//user:pass@host:port/]schema[?api_id=id&api_hash=hash]",
     )
     options.add_argument(
         "-c",
         "--config",
-        type=Path,
-        default=None,
         help="load config from FILE",
         dest="config",
         metavar="FILE",
     )
     options.add_argument(
+        "--ipv6",
+        action=BooleanOptionalAction,
+        default=ARGDefault(value=False),
+        dest="ipv6",
+        help="use ipv6 (default: %(default)s)",
+    )
+    options.add_argument(
         "--proxy",
-        default=DefaultARG(None),
+        default=ARGDefault(None),
         dest="proxy",
         metavar="{http,socks4,socks5}://user:pass@host:port",
+    )
+    options.add_argument(
+        "--takeout",
+        dest="takeout",
+        nargs="?",
+        const=Takeout.TRUE,
+        default=ARGDefault(Takeout.FALSE),
+        choices=list(Takeout),
+        type=Takeout,
     )
     return options
 
 
-def unpack_default[RT, DT](arg: DefaultARG[DT] | RT) -> DT | RT:
-    if isinstance(arg, DefaultARG):
+def unpack_default[RT, DT](arg: ARGDefault[DT] | RT) -> DT | RT:
+    if isinstance(arg, ARGDefault):
         return arg.value
     return arg

@@ -1,14 +1,13 @@
 __all__ = (
     "ABC",
     "ABCMeta",
-    "ARGSBase",
     "abstractmethod",
 )
 
-import sys
+import sys as _sys
 from abc import ABCMeta as _ABCMeta
 from abc import abstractmethod
-from itertools import chain
+from itertools import chain as _chain
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -31,7 +30,7 @@ class ABCMeta(_ABCMeta):
             err = "__slots__ should not be defined"
             raise TypeError(err)
 
-        if sys.version_info >= (3, 14):
+        if _sys.version_info >= (3, 14):
             from annotationlib import Format
 
             annotations = {}
@@ -46,7 +45,7 @@ class ABCMeta(_ABCMeta):
             f for b in bases for f in getattr(b, "__repr_fields__", ())
         ]
         if fields:
-            namespace["__repr_fields__"] = tuple(dict.fromkeys(chain(fields, slots)))
+            namespace["__repr_fields__"] = tuple(dict.fromkeys(_chain(fields, slots)))
         else:
             namespace["__repr_fields__"] = slots
         return super().__new__(mcls, name, bases, namespace, **kwargs)
@@ -54,29 +53,3 @@ class ABCMeta(_ABCMeta):
 
 class ABC(metaclass=ABCMeta):
     pass
-
-
-class ARGSBase(ABC):
-    def __iter_fields__(self):
-        for f in sorted(self.__repr_fields__):
-            try:
-                yield f, getattr(self, f)
-            except AttributeError:
-                continue
-
-    def __repr__(self) -> str:
-        attr = ", ".join(["%s=%r" % f for f in self.__iter_fields__()])
-        return f"{self.__class__.__name__}({attr})"
-
-
-class DefaultARG[T](ABC):
-    value: T
-
-    def __init__(self, value: T):
-        self.value = value
-
-    def __bool__(self):
-        return bool(self.value)
-
-    def __repr__(self):
-        return f"<Default: {self.value!r}>"

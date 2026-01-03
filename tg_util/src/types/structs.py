@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Literal, Self
 
 from msgspec import Struct, json, yaml
 
@@ -24,6 +24,18 @@ class Decodable(Struct):
     @classmethod
     def decode_yaml(cls, buf: bytes, /) -> Self:
         return yaml.decode(buf, type=cls, dec_hook=dec_hook)
+
+    @classmethod
+    def from_path(cls, fp: str | Path, fmt: Literal["json", "yaml"]) -> Self:
+        match fmt:
+            case "json":
+                func = cls.decode_json
+            case "yaml":
+                func = cls.decode_yaml
+            case Never:
+                err = f"invalid format: {Never}"
+                raise ValueError(err)
+        return func(Path(fp).read_bytes())
 
 
 class TLSchemaBase(Struct, tag=True, tag_field="_"):

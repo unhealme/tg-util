@@ -1,4 +1,4 @@
-__version__ = "r2025.10.15-2"
+__version__ = "r2026.01.03-3"
 
 
 import logging
@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import ParseResult, parse_qs, urlparse
 
 import aiofiles
-from msgspec import UNSET, UnsetType, json
+from msgspec import UNSET, json
 from telethon import TelegramClient
 from telethon.errors import ChannelPrivateError
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
@@ -20,7 +20,8 @@ from telethon.tl.types import (
 )
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .src import ABC, ARGSBase, DefaultARG, arc
+from .src import ABC, ARGSBase, arc
+from .src.config import Config, Takeout
 from .src.log import setup_logging
 from .src.tg import sessions
 from .src.tg.messages.export import MessageExport
@@ -30,9 +31,14 @@ from .src.tg.utils import (
     parse_hashtags,
     resolve_entity,
 )
-from .src.types import Decodable, EntityStats, tqdm
-from .src.utils import add_misc_args, encode_json_str, parse_proxy, unpack_default
-from .src.utils import add_opts_args as _add_opts_args
+from .src.types import ARGDefault, EntityStats, tqdm
+from .src.utils import (
+    add_misc_args,
+    add_opts_args,
+    encode_json_str,
+    parse_proxy,
+    unpack_default,
+)
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -44,22 +50,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class Takeout(Enum):
-    TRUE = "true"
-    FALSE = "false"
-    FALLBACK = "fallback"
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}.{self.name}"
-
-    def __str__(self):
-        return self.value
-
-    @property
-    def use(self):
-        return self is Takeout.TRUE or self is Takeout.FALLBACK
-
-
 class Mode(Enum):
     CLEANUP = 0
     EXPORT = 1
@@ -69,29 +59,19 @@ class Mode(Enum):
 
 
 class Arguments(ARGSBase):
-    config: Path | None
-    ids: list[tuple[str | int, int]]
-
-    archive: str | DefaultARG[str]
-    debug: bool | DefaultARG[bool]
-    export_path: Path | DefaultARG[None]
-    min_ratio: float | DefaultARG[float]
+    archive: str
+    debug: bool
+    export_path: str | None
+    ipv6: bool
+    min_ratio: float
     mode: Mode
-    proxy: str | DefaultARG[None]
-    session: str | DefaultARG[str]
-    takeout: Takeout | DefaultARG[Takeout]
-    to_db: bool | DefaultARG[bool]
+    proxy: str | None
+    session: str
+    takeout: Takeout
+    to_db: bool
 
-
-class Config(Decodable):
-    archive: str | UnsetType = UNSET
-    debug: bool | UnsetType = UNSET
-    export_path: Path | UnsetType = UNSET
-    min_ratio: float | UnsetType = UNSET
-    proxy: str | UnsetType = UNSET
-    session: str | UnsetType = UNSET
-    takeout: Takeout | UnsetType = UNSET
-    to_db: bool | UnsetType = UNSET
+    config: str | None
+    ids: list[tuple[str | int, int]]
 
 
 class TGExporter(ABC):
@@ -113,15 +93,15 @@ class TGExporter(ABC):
         self._args = args
         self._client = client
         self._export_ready = False
-        self._takeout = unpack_default(args.takeout)
-        self._wait_time = 0.0 if unpack_default(args.takeout).use else None
+        self._takeout = args.takeout
+        self._wait_time = 0.0 if args.takeout.use else None
 
     async def _init_export(self):
         if not self._export_ready:
-            self._out = unpack_default(self._args.export_path) or Path.cwd()
+            self._out = Path(self._args.export_path or Path.cwd())
             if self._args.to_db:
                 self._archive = await arc.create(
-                    urlparse(unpack_default(self._args.archive))
+                    urlparse(self._args.archive)
                 ).__aenter__()
             self._export_ready = True
 
@@ -257,7 +237,7 @@ class TGExporter(ABC):
         logger.debug("current loop %s", self._loop)
         match self._args.ids:
             case []:
-                await self.export_dialogs(unpack_default(self._args.min_ratio))
+                await self.export_dialogs(self._args.min_ratio)
             case ids:
                 for i in ids:
                     try:
@@ -277,9 +257,9 @@ async def main(_args: "Sequence[str] | None" = None):
     argparser, args = parse_args(_args)
     pkg = logging.getLogger(__package__)
     logging.root.setLevel(logging.ERROR)
-    setup_logging((pkg,), debug=unpack_default(args.debug))
+    setup_logging((pkg,), debug=args.debug)
     logger.debug("using args: %s", args)
-    match urlparse(unpack_default(args.session)):
+    match urlparse(args.session):
         case (
             ParseResult(
                 username=str(),
@@ -289,15 +269,16 @@ async def main(_args: "Sequence[str] | None" = None):
                 query=query,
             ) as url
         ):
-            if (proxy := unpack_default(args.proxy)) is not None:
+            if (proxy := args.proxy) is not None:
                 proxy = parse_proxy(urlparse(proxy))
             qs = parse_qs(query)
-            session = sessions.create(url)
+            session = sessions.create(url, args.ipv6)
             client = TelegramClient(
                 session,
                 int(qs["api_id"][0], 10),
                 qs["api_hash"][0],
                 connection=ConnectionTcpAbridged,
+                use_ipv6=args.ipv6,
                 proxy=proxy,  # type: ignore
                 catch_up=False,
                 receive_updates=False,
@@ -313,20 +294,6 @@ async def main(_args: "Sequence[str] | None" = None):
                     await tgex.cleanup_chats()
 
 
-def add_opts_args(parser: ArgumentParser):
-    options = _add_opts_args(parser)
-    options.add_argument(
-        "--takeout",
-        dest="takeout",
-        nargs="?",
-        const=Takeout.TRUE,
-        default=DefaultARG(Takeout.FALSE),
-        choices=list(Takeout),
-        type=Takeout,
-    )
-    return options
-
-
 def parse_ids(i: str) -> tuple[str | int, int]:
     e, _, m = i.partition("/")
     pe = int(e, 10) if e.isdigit() else e
@@ -339,7 +306,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     parser = ArgumentParser(add_help=False)
     add_misc_args(parser, __version__)
     subparser = parser.add_subparsers(required=True, metavar="mode")
-
     sub_export = subparser.add_parser("export", help=None, add_help=False)
     sub_export.set_defaults(mode=Mode.EXPORT)
     sub_export.add_argument(
@@ -355,8 +321,6 @@ def parse_args(_args: "Sequence[str] | None" = None):
     exports.add_argument(
         "-p",
         "--export-path",
-        type=Path,
-        default=DefaultARG(None),
         help="(default to current directory)",
         metavar="PATH",
         dest="export_path",
@@ -365,7 +329,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
         "--mr",
         "--min-ratio",
         type=float,
-        default=DefaultARG(0.0),
+        default=ARGDefault(0.0),
         help="minimum media to message ratio for export",
         metavar="NUM",
         dest="min_ratio",
@@ -373,12 +337,11 @@ def parse_args(_args: "Sequence[str] | None" = None):
     exports.add_argument(
         "--to-db",
         action="store_true",
-        default=DefaultARG(value=False),
+        default=ARGDefault(value=False),
         help="also export to archive db",
         dest="to_db",
     )
     add_opts_args(sub_export)
-
     sub_cleanup = subparser.add_parser("cleanup", help=None, add_help=False)
     sub_cleanup.set_defaults(mode=Mode.CLEANUP)
     add_misc_args(sub_cleanup, __version__)
@@ -386,10 +349,13 @@ def parse_args(_args: "Sequence[str] | None" = None):
 
     args = parser.parse_args(_args, Arguments())
     if args.config:
-        config = Config.decode_yaml(args.config.read_bytes())
+        config = Config.from_path(args.config, "yaml")
         for f, v in args.__iter_fields__():
-            if isinstance(v, DefaultARG) and (nv := getattr(config, f)) is not UNSET:
-                setattr(args, f, nv)
+            if isinstance(v, ARGDefault):
+                if (nv := getattr(config, f)) is not UNSET:
+                    setattr(args, f, nv)
+                else:
+                    setattr(args, f, unpack_default(v))
     return parser, args
 
 

@@ -3,6 +3,7 @@
 changes:
 - tables must be created manually
 - no version table
+- separate ipv4 and ipv6 sessions
 """
 # pyright: reportIncompatibleMethodOverride=false
 
@@ -35,11 +36,12 @@ CURRENT_VERSION = 7
 
 
 class PSQLSession(MemorySession):
+    _closed: bool
     _conn: "Connection[Record]"
+    _ipver: int
     _loop: AbstractEventLoop
     _schema: str
     _thread: Thread
-    _closed: bool
 
     def __init__(
         self,
@@ -48,6 +50,7 @@ class PSQLSession(MemorySession):
         host: str = "127.0.0.1",
         port: int = 5432,
         schema: str = "telethon",
+        ipv6: bool = False,
     ):
         if CURRENT_VERSION < UPSTREAM_VERSION:
             err = (
@@ -71,7 +74,10 @@ class PSQLSession(MemorySession):
                 database=schema,
             )
         )
-        result = self._wrap_sync(self._conn.fetchrow("select * from sessions"))
+        self._ipver = 6 if ipv6 else 4
+        result = self._wrap_sync(
+            self._conn.fetchrow("select * from sessions where ipver = $1", self._ipver)
+        )
         if result:
             (
                 self._dc_id,
@@ -79,6 +85,7 @@ class PSQLSession(MemorySession):
                 self._port,
                 key,
                 self._takeout_id,
+                _,
             ) = result
             self._auth_key = AuthKey(data=key)
 
@@ -99,7 +106,11 @@ class PSQLSession(MemorySession):
     def set_dc(self, dc_id, server_address, port):
         super().set_dc(dc_id, server_address, port)
         self._update_session_table()
-        row = self._wrap_sync(self._conn.fetchrow("select auth_key from sessions"))
+        row = self._wrap_sync(
+            self._conn.fetchrow(
+                "select auth_key from sessions where ipver = $1", self._ipver
+            )
+        )
         if row and row[0]:
             self._auth_key = AuthKey(data=row[0])
         else:
@@ -117,15 +128,18 @@ class PSQLSession(MemorySession):
 
     def _update_session_table(self):
         with self._transactions():
-            self._wrap_sync(self._conn.execute("truncate sessions"))
+            self._wrap_sync(
+                self._conn.execute("delete from sessions where ipver = $1", self._ipver)
+            )
             self._wrap_sync(
                 self._conn.execute(
-                    "insert into sessions values($1, $2, $3, $4, $5)",
+                    "insert into sessions values($1, $2, $3, $4, $5, $6)",
                     self._dc_id,
                     self._server_address,
                     self._port,
                     self._auth_key.key if self._auth_key else b"",
                     self._takeout_id,
+                    self._ipver,
                 )
             )
 
