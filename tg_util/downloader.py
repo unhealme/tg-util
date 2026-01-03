@@ -1,4 +1,4 @@
-__version__ = "r2026.01.03-1"
+__version__ = "r2026.01.03-2"
 
 
 import contextlib
@@ -526,6 +526,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
     downloads.add_argument(
         "-p",
         "--download-path",
+        default=ARGDefault(None),
         help="(default: current directory)",
         metavar="PATH",
         dest="download_path",

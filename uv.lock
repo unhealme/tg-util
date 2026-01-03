@@ -393,7 +393,7 @@ cryptg = [
 
 [[package]]
 name = "tg-util"
-version = "0.1.21"
+version = "0.1.21.post1"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

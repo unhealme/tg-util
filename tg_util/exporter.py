@@ -1,4 +1,4 @@
-__version__ = "r2026.01.03-3"
+__version__ = "r2026.01.03-4"
 
 
 import logging
@@ -321,6 +321,7 @@ def parse_args(_args: "Sequence[str] | None" = None):
     exports.add_argument(
         "-p",
         "--export-path",
+        default=ARGDefault(None),
         help="(default to current directory)",
         metavar="PATH",
         dest="export_path",
