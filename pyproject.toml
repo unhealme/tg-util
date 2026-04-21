@@ -1,10 +1,6 @@
-[build-system]
-requires = ["uv_build>=0.9.2,<0.10.0"]
-build-backend = "uv_build"
-
 [project]
 name = "tg-util"
-version = "0.1.21-1"
+version = "0.1.22"
 maintainers = [{ name = "unhealme", email = "o2tongpethuk@gmail.com" }]
 description = "telegram utilities for personal use case"
 readme = "README.md"
@@ -18,6 +14,10 @@ dependencies = [
     "telethon[cryptg]",
     "tqdm",
 ]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
 
 [project.optional-dependencies]
 mysql = ["mysqlx-connector-python"]

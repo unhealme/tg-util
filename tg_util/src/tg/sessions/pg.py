@@ -32,7 +32,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from typing import Any, Coroutine
 
-CURRENT_VERSION = 7
+CURRENT_VERSION = 8
 
 
 class PSQLSession(MemorySession):
@@ -51,6 +51,7 @@ class PSQLSession(MemorySession):
         port: int = 5432,
         schema: str = "telethon",
         ipv6: bool = False,
+        store_tmp_auth_key: bool = False,
     ):
         if CURRENT_VERSION < UPSTREAM_VERSION:
             err = (
@@ -65,7 +66,7 @@ class PSQLSession(MemorySession):
         self._thread.start()
         self._schema = schema
         self._closed = False
-        self._conn = self._wrap_sync(
+        self._conn = self._do_sync(
             connect(
                 user=user,
                 password=password,
@@ -75,7 +76,8 @@ class PSQLSession(MemorySession):
             )
         )
         self._ipver = 6 if ipv6 else 4
-        result = self._wrap_sync(
+        self.store_tmp_auth_key = store_tmp_auth_key
+        result = self._do_sync(
             self._conn.fetchrow("select * from sessions where ipver = $1", self._ipver)
         )
         if result:
@@ -86,8 +88,10 @@ class PSQLSession(MemorySession):
                 key,
                 self._takeout_id,
                 _,
+                tmp_key,
             ) = result
             self._auth_key = AuthKey(data=key)
+            self._tmp_auth_key = AuthKey(data=tmp_key)
 
     def __repr__(self) -> str:
         return "<%s: %s>" % (self.__class__.__name__, self._schema)
@@ -106,9 +110,10 @@ class PSQLSession(MemorySession):
     def set_dc(self, dc_id, server_address, port):
         super().set_dc(dc_id, server_address, port)
         self._update_session_table()
-        row = self._wrap_sync(
+        row = self._do_sync(
             self._conn.fetchrow(
-                "select auth_key from sessions where ipver = $1", self._ipver
+                "select auth_key, tmp_auth_key from sessions where ipver = $1",
+                self._ipver,
             )
         )
         if row and row[0]:
@@ -116,9 +121,19 @@ class PSQLSession(MemorySession):
         else:
             self._auth_key = None
 
+        if row and row[1]:
+            self._tmp_auth_key = AuthKey(data=row[1])
+        else:
+            self._tmp_auth_key = None
+
     @MemorySession.auth_key.setter
     def auth_key(self, value):
         self._auth_key = value
+        self._update_session_table()
+
+    @MemorySession.tmp_auth_key.setter
+    def tmp_auth_key(self, value):
+        self._tmp_auth_key = value
         self._update_session_table()
 
     @MemorySession.takeout_id.setter
@@ -128,23 +143,26 @@ class PSQLSession(MemorySession):
 
     def _update_session_table(self):
         with self._transactions():
-            self._wrap_sync(
+            self._do_sync(
                 self._conn.execute("delete from sessions where ipver = $1", self._ipver)
             )
-            self._wrap_sync(
+            self._do_sync(
                 self._conn.execute(
-                    "insert into sessions values($1, $2, $3, $4, $5, $6)",
+                    "insert into sessions values($1, $2, $3, $4, $5, $6, $7)",
                     self._dc_id,
                     self._server_address,
                     self._port,
                     self._auth_key.key if self._auth_key else b"",
                     self._takeout_id,
                     self._ipver,
+                    self._tmp_auth_key.key
+                    if (self.store_tmp_auth_key and self._tmp_auth_key)
+                    else b"",
                 )
             )
 
     def get_update_state(self, entity_id: int):
-        row = self._wrap_sync(
+        row = self._do_sync(
             self._conn.fetchrow(
                 'select pts, qts, "date", seq from update_state where id = $1',
                 entity_id,
@@ -157,7 +175,7 @@ class PSQLSession(MemorySession):
 
     def set_update_state(self, entity_id: int, state: State):
         assert state.date
-        self._wrap_sync(
+        self._do_sync(
             self._conn.execute(
                 "insert into update_state values ($1, $2, $3, $4, $5) "
                 "on conflict (id) do update set pts = $2, qts = $3, "
@@ -171,7 +189,7 @@ class PSQLSession(MemorySession):
         )
 
     def get_update_states(self):
-        rows = self._wrap_sync(self._conn.fetch("select * from update_state"))
+        rows = self._do_sync(self._conn.fetch("select * from update_state"))
         for row in rows:
             yield (
                 row[0],
@@ -186,7 +204,7 @@ class PSQLSession(MemorySession):
 
     def close(self):
         if not self._closed:
-            self._wrap_sync(self._conn.close())
+            self._do_sync(self._conn.close())
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join()
             self._closed = True
@@ -200,7 +218,7 @@ class PSQLSession(MemorySession):
             return
 
         now = int(datetime.now().timestamp())
-        self._wrap_sync(
+        self._do_sync(
             self._conn.executemany(
                 "insert into entities values ($1, $2, $3, $4, $5, $6) "
                 "on conflict (id) do update set hash = $2, username = $3, "
@@ -210,7 +228,7 @@ class PSQLSession(MemorySession):
         )
 
     def get_entity_rows_by_phone(self, phone: int):
-        return self._wrap_sync(
+        return self._do_sync(
             self._conn.fetchrow(
                 "select id, hash from entities where phone = $1",
                 phone,
@@ -218,7 +236,7 @@ class PSQLSession(MemorySession):
         )
 
     def get_entity_rows_by_username(self, username: str):
-        rows = self._wrap_sync(
+        rows = self._do_sync(
             self._conn.fetch(
                 'select id, hash, "date" from entities where username = $1',
                 username,
@@ -228,7 +246,7 @@ class PSQLSession(MemorySession):
             return None
         if len(rows) > 1:
             rows.sort(key=lambda t: t[2] or 0)
-            self._wrap_sync(
+            self._do_sync(
                 self._conn.executemany(
                     "update entities set username = null where id = $1",
                     ((r[0],) for r in rows[:-1]),
@@ -238,7 +256,7 @@ class PSQLSession(MemorySession):
         return row[0], row[1]
 
     def get_entity_rows_by_name(self, name: str):
-        return self._wrap_sync(
+        return self._do_sync(
             self._conn.fetchrow("select id, hash from entities where name = $1", name)
         )
 
@@ -253,10 +271,10 @@ class PSQLSession(MemorySession):
                 get_peer_id(PeerChat(id)),
                 get_peer_id(PeerChannel(id)),
             )
-        return self._wrap_sync(self._conn.fetchrow(*q))
+        return self._do_sync(self._conn.fetchrow(*q))
 
     def get_file(self, md5_digest: bytes, file_size: int, cls: "Any"):
-        if row := self._wrap_sync(
+        if row := self._do_sync(
             self._conn.fetchrow(
                 "select id, hash from sent_files where "
                 "md5_digest = $1 and file_size = $2 and type = $3",
@@ -271,7 +289,7 @@ class PSQLSession(MemorySession):
         if not isinstance(instance, (InputDocument, InputPhoto)):
             err = f"Cannot cache {type(instance)} instance"
             raise TypeError(err)
-        self._wrap_sync(
+        self._do_sync(
             self._conn.execute(
                 "insert into sent_files values ($1, $2, $3, $4, $5) "
                 "on conflict (md5_digest, file_size, type) do update set "
@@ -284,18 +302,18 @@ class PSQLSession(MemorySession):
             )
         )
 
-    def _wrap_sync[T](self, coro: "Coroutine[Any, Any, T]"):
+    def _do_sync[T](self, coro: "Coroutine[Any, Any, T]"):
         return run_coroutine_threadsafe(coro, self._loop).result()
 
     @contextmanager
     def _transactions(self):
         t = self._conn.transaction()
         try:
-            self._wrap_sync(t.start())
+            self._do_sync(t.start())
             yield
-            self._wrap_sync(t.commit())
+            self._do_sync(t.commit())
         except BaseException:
-            self._wrap_sync(t.rollback())
+            self._do_sync(t.rollback())
             raise
 
     def _start_loop(self):

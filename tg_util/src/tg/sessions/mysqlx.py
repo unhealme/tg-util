@@ -28,7 +28,7 @@ from telethon.utils import get_peer_id
 
 warnings.filterwarnings("ignore", module="mysqlx.protobuf")
 
-CURRENT_VERSION = 7
+CURRENT_VERSION = 8
 
 
 class MySQLXSession(MemorySession):
@@ -47,6 +47,7 @@ class MySQLXSession(MemorySession):
         host: str = "127.0.0.1",
         port: int = 33060,
         schema: str = "telethon",
+        store_tmp_auth_key: bool = False,
     ):
         if CURRENT_VERSION < UPSTREAM_VERSION:
             err = (
@@ -65,6 +66,7 @@ class MySQLXSession(MemorySession):
             schema=schema,
             use_pure=True,
         )
+        self.store_tmp_auth_key = store_tmp_auth_key
 
         self.__schema = self.__session.get_schema(schema)
         self.__tbl_entities = self.__schema.get_table("entities")
@@ -80,8 +82,10 @@ class MySQLXSession(MemorySession):
                 self._port,
                 key,
                 self._takeout_id,
+                tmp_key,
             ) = result
             self._auth_key = AuthKey(data=key)
+            self._tmp_auth_key = AuthKey(data=tmp_key)
 
     def __repr__(self) -> str:
         return "<%s: %s>" % (self.__class__.__name__, self.__schema.name)
@@ -101,16 +105,29 @@ class MySQLXSession(MemorySession):
         super().set_dc(dc_id, server_address, port)
         self._update_session_table()
         row = cast(
-            "Row | None", self.__tbl_sessions.select("auth_key").execute().fetch_one()
+            "Row | None",
+            self.__tbl_sessions.select("auth_key", "tmp_auth_key")
+            .execute()
+            .fetch_one(),
         )
         if row and row[0]:
             self._auth_key = AuthKey(data=row[0])
         else:
             self._auth_key = None
 
+        if row and row[1]:
+            self._tmp_auth_key = AuthKey(data=row[1])
+        else:
+            self._tmp_auth_key = None
+
     @MemorySession.auth_key.setter
     def auth_key(self, value):
         self._auth_key = value
+        self._update_session_table()
+
+    @MemorySession.tmp_auth_key.setter
+    def tmp_auth_key(self, value):
+        self._tmp_auth_key = value
         self._update_session_table()
 
     @MemorySession.takeout_id.setter
@@ -128,12 +145,16 @@ class MySQLXSession(MemorySession):
                 "port",
                 "auth_key",
                 "takeout_id",
+                "tmp_auth_key",
             ).values(
                 self._dc_id,
                 self._server_address,
                 self._port,
                 self._auth_key.key if self._auth_key else b"",
                 self._takeout_id,
+                self._tmp_auth_key.key
+                if (self.store_tmp_auth_key and self._tmp_auth_key)
+                else b"",
             ).execute()
             self.__session.commit()
         except Exception:
